@@ -60,7 +60,7 @@ from MOCL_IRL import backward_pass, sample_traj, get_log_likelihood
 
 
 
-
+WATER = [15, 16, 17, 24, 31]
 
 # ==========================================
 # 4. CONFIGURATION & EXECUTION
@@ -78,7 +78,7 @@ from MOCL_IRL import backward_pass, sample_traj, get_log_likelihood
 GRID_SIZE = 7 
 
 # --- STEP 2: DEFINE TERRAIN STATES (indices) ---
-WATER = [15, 16, 17, 18, 24, 31] # RIVER / HARD CONSTRAINTS
+WATER = [15, 16, 17, 24, 31] # RIVER / HARD CONSTRAINTS
 GRASS = [2, 3, 9, 10, 22, 23, 29, 30]
 ROCKS = [4, 5, 11, 12, 25, 26, 32, 33, 39, 40]
 
@@ -107,3 +107,26 @@ if __name__ == "__main__":
 
     # Show Trajectories (Graph 2)
     gw.plot_grid_setup(mdp, "Graph 2: Expert Trajectories (Lime=Grass Preference, Orange=Rock Preference)", all_demos, resp)
+
+
+    # Constraint Inference (MLCI)
+    inferred_c = []
+    candidates = [s for s in range(mdp.num_states) if not any(s in d for d in all_demos) and s != mdp.goal_state]
+    
+    print("Running Inference...")
+    for _ in range(4): # Search for top 4 constraints
+        best_cand, best_score = None, -np.inf
+        for cand in np.random.choice(candidates, min(15, len(candidates)), replace=False):
+            test_c = inferred_c + [cand]
+            score = sum(get_log_likelihood(d, mdp, w1, backward_pass(mdp, w1, test_c)) for d in all_demos[:N_DEMOS_EXPERT1]) + \
+                    sum(get_log_likelihood(d, mdp, w2, backward_pass(mdp, w2, test_c)) for d in all_demos[N_DEMOS_EXPERT1:])
+            if score > best_score:
+                best_score, best_cand = score, cand
+        if best_cand:
+            inferred_c.append(best_cand)
+            candidates.remove(best_cand)
+        # 5. Result Analysis
+
+    print("\n=== Results ===")
+    print(f"Ground Truth: {WATER}")
+    print(f"Inferred:     {inferred_c}")
