@@ -73,5 +73,63 @@ def plot_grid_setup(mdp, title, demos=None, resp=None, inf_c=None):
             coords = np.array([(s % mdp.size, mdp.size - 1 - (s // mdp.size)) for s in d])
             ax.plot(coords[:, 0], coords[:, 1], color=line_colors[c_id], alpha=0.8, linewidth=3)
 
+    plt.savefig('expert_trajectories.png', dpi=600, bbox_inches='tight')
     plt.title(title)
+    plt.show()
+
+
+
+def plot_preference_recovery(w1_true, w2_true, w_learned, features=['Sand', 'Grass', 'Rocks', 'Water']):
+    """
+    Plots a grouped bar chart comparing normalized ground-truth weights 
+    to the learned weights from the MOCI algorithm.
+    """
+    # Helper function to normalize weights for fair visual comparison
+    def normalize(w):
+        return w / (np.linalg.norm(w) + 1e-8)
+    
+    # --- UPDATED MATCHING LOGIC ---
+    # Inspect Cluster 1 (w_learned[0])
+    # Index 1 is Grass, Index 2 is Rocks
+    if w_learned[0][1] > w_learned[0][2]:
+        print("Mapping Cluster 0 to Expert 1 (Grass-Lover)")
+        w1_learned = w_learned[0]
+        w2_learned = w_learned[1]
+    else:
+        print("Mapping Cluster 0 to Expert 2 (Rock-Lover)")
+        w1_learned = w_learned[1]
+        w2_learned = w_learned[0]
+
+    # Normalize all weights so the scales match visually
+    gt_1 = normalize(w1_true)
+    gt_2 = normalize(w2_true)
+    lrn_1 = normalize(w1_learned)
+    lrn_2 = normalize(w2_learned)
+
+    x = np.arange(len(features))
+    width = 0.35
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Plot Expert 1 (Grass Lover)
+    ax1.bar(x - width/2, gt_1, width, label='Ground Truth', color='lightgray', edgecolor='black')
+    ax1.bar(x + width/2, lrn_1, width, label='MOCI Learned', color='forestgreen', edgecolor='black')
+    ax1.set_title('Expert 1 (Grass-Lover) Preferences', fontsize=14)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(features, fontsize=12)
+    ax1.axhline(0, color='black', linewidth=1)
+    ax1.legend()
+
+    # Plot Expert 2 (Rock Lover)
+    ax2.bar(x - width/2, gt_2, width, label='Ground Truth', color='lightgray', edgecolor='black')
+    ax2.bar(x + width/2, lrn_2, width, label='MOCI Learned', color='saddlebrown', edgecolor='black')
+    ax2.set_title('Expert 2 (Rock-Lover) Preferences', fontsize=14)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(features, fontsize=12)
+    ax2.axhline(0, color='black', linewidth=1)
+    ax2.legend()
+
+    plt.suptitle('Joint Recovery of Heterogeneous Preferences', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('preference_recovery_barchart.png', dpi=600, bbox_inches='tight')
     plt.show()
