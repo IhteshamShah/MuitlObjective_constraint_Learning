@@ -73,7 +73,7 @@ def plot_grid_setup(mdp, title, demos=None, resp=None, inf_c=None):
             coords = np.array([(s % mdp.size, mdp.size - 1 - (s // mdp.size)) for s in d])
             ax.plot(coords[:, 0], coords[:, 1], color=line_colors[c_id], alpha=0.8, linewidth=3)
 
-    plt.savefig('expert_trajectories.png', dpi=600, bbox_inches='tight')
+    plt.savefig('Results/expert_trajectories.png', dpi=600, bbox_inches='tight')
     plt.title(title)
     plt.show()
 
@@ -131,5 +131,5 @@ def plot_preference_recovery(w1_true, w2_true, w_learned, features=['Sand', 'Gra
 
     plt.suptitle('Joint Recovery of Heterogeneous Preferences', fontsize=16, fontweight='bold')
     plt.tight_layout()
-    plt.savefig('preference_recovery_barchart.png', dpi=600, bbox_inches='tight')
+    plt.savefig('Results/preference_recovery_barchart.png', dpi=600, bbox_inches='tight')
     plt.show()

@@ -262,9 +262,9 @@ def e_step(mdp, D, C_hat, weights, priors):
             
 #     return new_weights
 
-def m_step_weights(mdp, D, C_hat, weights, responsibilities, lr=0.1, steps=5):
+def m_step_weights(mdp, D, C_hat, weights, responsibilities, lr=0.1, steps=5, anchor_idx=0):
     """
-    M-Step B: Update Reward Weights (MaxEnt IRL) with stabilized gradients.
+    M-Step B: Update Reward Weights with Anchor Feature Fixing.
     """
     K = len(weights)
     new_weights = [np.copy(w) for w in weights]
@@ -273,32 +273,34 @@ def m_step_weights(mdp, D, C_hat, weights, responsibilities, lr=0.1, steps=5):
         for _ in range(steps):
             Z = backward_pass(mdp, new_weights[k], C_hat)
             
-            # 1. Compute Expected Features E[phi(xi)] ONCE per cluster step
+            # 1. Compute Expected Features (Batch Sampled)
             exp_counts = np.zeros(mdp.num_features)
-            num_samples = 100  # Increase to 100 or more to kill the variance!
+            num_samples = 100
             for _ in range(num_samples):
                 sample = sample_traj(mdp, new_weights[k], Z)
                 for step in range(len(sample)-1):
                     s, sn = sample[step], sample[step+1]
                     a = next(a_idx for a_idx in range(5) if mdp.transitions[s, a_idx] == sn)
                     exp_counts += mdp.feature_map[s, a]
-            exp_counts /= num_samples  # Average expected feature counts
+            exp_counts /= num_samples 
             
             # 2. Compute the weighted empirical gradients
             grad = np.zeros(mdp.num_features)
-            
             for i, xi_i in enumerate(D):
                 if responsibilities[i, k] < 1e-3: continue
                 
-                # Empirical Features phi(xi_i)
                 emp_counts = np.zeros(mdp.num_features)
                 for step in range(len(xi_i)-1):
                     s, sn = xi_i[step], xi_i[step+1]
                     a = next(a_idx for a_idx in range(5) if mdp.transitions[s, a_idx] == sn)
                     emp_counts += mdp.feature_map[s, a]
                 
-                # Gradient: gamma * (Empirical - Expected)
                 grad += responsibilities[i, k] * (emp_counts - exp_counts)
+                
+            # --- THE ANCHOR TRICK ---
+            # Artificially force the gradient for the anchor feature to zero
+            if anchor_idx is not None:
+                grad[anchor_idx] = 0.0
                 
             # 3. Apply the gradient
             new_weights[k] += lr * grad / len(D)
@@ -363,6 +365,9 @@ def run_em_mlci(mdp, D, K, d_DKL, max_em_iters=10):
     C_hat = set()
     num_features = mdp.num_features
     weights = [np.random.randn(num_features) * 0.1 for _ in range(K)]
+    for k in range(K):
+        weights[k][0] = 0.0  # Force Sand (index 0) to start exactly at 0.0 (Anchor Feature Fixing)
+
     priors = np.full(K, 1.0 / K)
     
     for em_iter in range(max_em_iters):
@@ -419,8 +424,8 @@ def define_mdp_and_demos():
     mdp = gw.CustomizableFeatureMDP(GRID_SIZE, WATER, GRASS, ROCKS)
     
     # Define Preferences [Sand, Grass, Rock, Water]
-    w1 = np.array([1.0, 3.0, -1, -10.0]) # Expert 1: Grass Lover
-    w2 = np.array([1.0, -1, 3.0, -10.0]) # Expert 2: Rock Lover
+    w1 = np.array([0.5, 3.0, -1, -10.0]) # Expert 1: Grass Lover
+    w2 = np.array([0.5, -1, 3.0, -10.0]) # Expert 2: Rock Lover
     
     # Generate Demos
     z1 = backward_pass(mdp, w1, WATER)
@@ -428,7 +433,6 @@ def define_mdp_and_demos():
     
     all_demos = [sample_traj(mdp, w1, z1) for _ in range(N_DEMOS_EXPERT1)] + \
                 [sample_traj(mdp, w2, z2) for _ in range(N_DEMOS_EXPERT2)]
-    
     # Mock responsibilities for visualization
     resp = np.zeros((N_DEMOS_EXPERT1 + N_DEMOS_EXPERT2, 2))
     resp[:N_DEMOS_EXPERT1, 0] = 1; resp[N_DEMOS_EXPERT2:, 1] = 1
