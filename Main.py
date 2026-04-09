@@ -2,131 +2,133 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import gridworld as gw
-from MOCL_IRL import backward_pass, sample_traj, get_log_likelihood
+import MOCI_IRL as moci
 
 
 
-# # ==========================================
-# # 4. Main Execution
-# # ==========================================
-# if __name__ == "__main__":
-#     mdp = FeatureGridMDP()
+def run_em_moci(mdp, D, K, d_DKL, max_em_iters=10):
+    """
+    Main loop for Multi-Expert MLCI using Expectation-Maximization.
+    """
+    # Step 0: Initialization
+    C_hat = set()
+    num_features = mdp.num_features
+    weights = [np.random.randn(num_features) * 0.1 for _ in range(K)]
+    priors = np.full(K, 1.0 / K)
     
-#     # Show Setup (Graph 1)
-#     plot_grid_setup(mdp, "Graph 1: Environment Setup (Blue=Water, Green=Grass, Brown=Rock)")
+    for em_iter in range(max_em_iters):
+        print(f"--- EM Iteration {em_iter + 1} ---")
+        
+        # Step 1: E-Step (Expectation)
+        responsibilities = moci.e_step(mdp, D, C_hat, weights, priors)
+        
+        # Step 2: M-Step (Maximization)
+        # A. Update Cluster Priors: pi_k = (1/|D|) * sum_{i=1}^{|D|} gamma_{i,k}
+        priors = np.mean(responsibilities, axis=0)
+        
+        # B. Update Reward Weights w_k
+        weights = moci.m_step_weights(mdp, D, C_hat, weights, responsibilities)
+        
+        # C. Update Constraints
+        C_hat = moci.m_step_constraints(mdp, D, C_hat, weights, priors, d_DKL)
+        
+        print(f"Current Inferred Constraints: {sorted(list(C_hat))}")
+        
+    return C_hat, weights, priors
 
-#     # Expert Preferences: [Sand, Grass, Rock, Water]
-#     # Expert 1 likes Grass (+2), Expert 2 likes Rock (+2)
-#     w1 = np.array([0.0, 2.0, 0.0, -5.0]) 
-#     w2 = np.array([0.0, 0.0, 2.0, -5.0])
-    
-#     # True constraints are water
-#     z1 = backward_pass(mdp, w1, mdp.water_states)
-#     z2 = backward_pass(mdp, w2, mdp.water_states)
-    
-#     demos = [sample_traj(mdp, w1, z1) for _ in range(5)] + [sample_traj(mdp, w2, z2) for _ in range(5)]
-#     # Mock responsibilities for visualization
-#     resp = np.zeros((10, 2))
-#     resp[:5, 0] = 1; resp[5:, 1] = 1
+def define_mdp_and_demos():
+    """Helper function to define the MDP and generate expert demonstrations."""
+    # --- STEP 1: DEFINE GRIDWORLD SIZE ---
 
-#     # Show Trajectories (Graph 2)
-#     plot_grid_setup(mdp, "Graph 2: Expert Trajectories (Lime=Grass Preference, Orange=Rock Preference)", demos, resp)
+# 5×5 GridWorld            6×6 GridWorld              7×7 GridWorld                 8×8 GridWorld
+# ------------------------------------------------------------------------------------------------
+# [ 0  1  2  3  4 ]        [ 0  1  2  3  4  5 ]        [ 0  1  2  3  4  5  6 ]        [ 0  1  2  3  4  5  6  7 ]
+# [ 5  6  7  8  9 ]        [ 6  7  8  9 10 11 ]        [ 7  8  9 10 11 12 13 ]        [ 8  9 10 11 12 13 14 15 ]
+# [10 11 12 13 14 ]        [12 13 14 15 16 17 ]        [14 15 16 17 18 19 20 ]        [16 17 18 19 20 21 22 23 ]
+# [15 16 17 18 19 ]        [18 19 20 21 22 23 ]        [21 22 23 24 25 26 27 ]        [24 25 26 27 28 29 30 31 ]
+# [20 21 22 23 24 ]        [24 25 26 27 28 29 ]        [28 29 30 31 32 33 34 ]        [32 33 34 35 36 37 38 39 ]
+#                          [30 31 32 33 34 35 ]        [35 36 37 38 39 40 41 ]        [40 41 42 43 44 45 46 47 ]
+#                                                       [42 43 44 45 46 47 48 ]        [48 49 50 51 52 53 54 55 ]
+#                                                                                      [56 57 58 59 60 61 62 63 ]
+    '''
+    GRID_SIZE = 5 
 
-#     # Simplified Constraint Inference
-#     inferred_c = []
-#     candidates = [s for s in range(mdp.num_states) if not any(s in d for d in demos) and s != mdp.goal_state]
-    
-#     print("Inferring constraints...")
-#     for _ in range(4): # Run 4 steps of MLCI
-#         best_cand, best_score = None, -np.inf
-#         for cand in np.random.choice(candidates, 15):
-#             test_c = inferred_c + [cand]
-#             z_test1 = backward_pass(mdp, w1, test_c)
-#             z_test2 = backward_pass(mdp, w2, test_c)
-#             score = sum(get_log_likelihood(d, mdp, w1, z_test1) for d in demos[:5]) + \
-#                     sum(get_log_likelihood(d, mdp, w2, z_test2) for d in demos[5:])
-#             if score > best_score:
-#                 best_score, best_cand = score, cand
-#         if best_cand:
-#             inferred_c.append(best_cand)
-#             candidates.remove(best_cand)
+    # --- STEP 2: DEFINE TERRAIN STATES (indices) ---
+    WATER = [12,13] # RIVER / HARD CONSTRAINTS
+    GRASS = [3,7,14]
+    ROCKS = [10,11,21]
+    '''
+    # --- STEP 2: DEFINE TERRAIN STATES (indices) ---
+    GRID_SIZE = 8
+    WATER = [12,17,38, 42, 43] # RIVER / HARD CONSTRAINTS
+    GRASS = [3,7,12,13,29, 32, 33, 19,39,49]
+    ROCKS = [20, 6,11,21,25,26,32,40,51,52,53]
 
-#     # Show Final Constraints (Graph 3)
-#     plot_grid_setup(mdp, "Graph 3: True vs Inferred Constraints (Hatched Red = Inferred)", None, None, inferred_c)
-
-
-
-
-
-
-
-WATER = [15, 16, 17, 24, 31]
-
-# ==========================================
-# 4. CONFIGURATION & EXECUTION
-# ==========================================
-# [ 0  1  2  3  4  5  6  7 ]
-# [ 8  9 10 11 12 13 14 15 ]
-# [16 17 18 19 20 21 22 23 ]
-# [24 25 26 27 28 29 30 31 ]
-# [32 33 34 35 36 37 38 39 ]
-# [40 41 42 43 44 45 46 47 ]
-# [48 49 50 51 52 53 54 55 ]
-# [56 57 58 59 60 61 62 63 ]
-
-# --- STEP 1: DEFINE GRIDWORLD SIZE ---
-GRID_SIZE = 7 
-
-# --- STEP 2: DEFINE TERRAIN STATES (indices) ---
-WATER = [15, 16, 17, 24, 31] # RIVER / HARD CONSTRAINTS
-GRASS = [2, 3, 9, 10, 22, 23, 29, 30]
-ROCKS = [4, 5, 11, 12, 25, 26, 32, 33, 39, 40]
-
-# --- STEP 3: DEFINE DEMONSTRATION COUNTS ---
-N_DEMOS_EXPERT1 = 10
-N_DEMOS_EXPERT2 = 10
-
-# --- RUN SIMULATION ---
-if __name__ == "__main__":
-    # Create MDP
+    # --- STEP 3: DEFINE DEMONSTRATION COUNTS ---
+    N_DEMOS_EXPERT1 = 10
+    N_DEMOS_EXPERT2 = 10
     mdp = gw.CustomizableFeatureMDP(GRID_SIZE, WATER, GRASS, ROCKS)
     
     # Define Preferences [Sand, Grass, Rock, Water]
-    w1 = np.array([0.0, 3.0, 0.0, -10.0]) # Expert 1: Grass Lover
-    w2 = np.array([0.0, 0.0, 3.0, -10.0]) # Expert 2: Rock Lover
+    w1 = np.array([1.0, 3.0, -1, -10.0]) # Expert 1: Grass Lover
+    w2 = np.array([1.0, -1, 3.0, -10.0]) # Expert 2: Rock Lover
     
     # Generate Demos
-    z1 = backward_pass(mdp, w1, WATER)
-    z2 = backward_pass(mdp, w2, WATER)
+    z1 = moci.backward_pass(mdp, w1, WATER)
+    z2 = moci.backward_pass(mdp, w2, WATER)
     
-    all_demos = [sample_traj(mdp, w1, z1) for _ in range(N_DEMOS_EXPERT1)] + \
-                [sample_traj(mdp, w2, z2) for _ in range(N_DEMOS_EXPERT2)]
+    all_demos = [moci.sample_traj(mdp, w1, z1) for _ in range(N_DEMOS_EXPERT1)] + \
+                [moci.sample_traj(mdp, w2, z2) for _ in range(N_DEMOS_EXPERT2)]
+    
     # Mock responsibilities for visualization
     resp = np.zeros((N_DEMOS_EXPERT1 + N_DEMOS_EXPERT2, 2))
     resp[:N_DEMOS_EXPERT1, 0] = 1; resp[N_DEMOS_EXPERT2:, 1] = 1
 
+    resp = np.zeros((N_DEMOS_EXPERT1 + N_DEMOS_EXPERT2, 2))
+    resp[:N_DEMOS_EXPERT1, 0] = 1; resp[N_DEMOS_EXPERT2:, 1] = 1
+
     # Show Trajectories (Graph 2)
-    gw.plot_grid_setup(mdp, "Graph 2: Expert Trajectories (Lime=Grass Preference, Orange=Rock Preference)", all_demos, resp)
+    gw.plot_grid_setup(mdp, "Expert Trajectories (Lime=Grass Preference, Orange=Rock Preference)", all_demos, resp)
 
 
-    # Constraint Inference (MLCI)
-    inferred_c = []
-    candidates = [s for s in range(mdp.num_states) if not any(s in d for d in all_demos) and s != mdp.goal_state]
+
     
-    print("Running Inference...")
-    for _ in range(4): # Search for top 4 constraints
-        best_cand, best_score = None, -np.inf
-        for cand in np.random.choice(candidates, min(15, len(candidates)), replace=False):
-            test_c = inferred_c + [cand]
-            score = sum(get_log_likelihood(d, mdp, w1, backward_pass(mdp, w1, test_c)) for d in all_demos[:N_DEMOS_EXPERT1]) + \
-                    sum(get_log_likelihood(d, mdp, w2, backward_pass(mdp, w2, test_c)) for d in all_demos[N_DEMOS_EXPERT1:])
-            if score > best_score:
-                best_score, best_cand = score, cand
-        if best_cand:
-            inferred_c.append(best_cand)
-            candidates.remove(best_cand)
-        # 5. Result Analysis
+    return w1, w2, WATER, mdp, all_demos, resp
+# ==========================================
+# EXECUTION SCRIPT
+# ==========================================
+if __name__ == "__main__":
+    # Example: mdp = CustomizableFeatureMDP(GRID_SIZE, WATER, GRASS, ROCKS)
+    # Example: all_demos = [...]
+    w1,w2, WATER, mdp, all_demos, resp = define_mdp_and_demos()
+    # Run the Expectation Maximization-MOCI (em_moci) framework
+    inferred_c, final_weights, final_priors = run_em_moci(mdp, all_demos, K=2, d_DKL=0.05, max_em_iters=10)
 
-    print("\n=== Results ===")
-    print(f"Ground Truth: {WATER}")
-    print(f"Inferred:     {inferred_c}")
+
+    print(f"Ground Truth WATER tiles: {WATER}")
+    print(f"Algorithm Inferred Constraints: {list(inferred_c)}")
+
+    # We use the same 'resp' array to keep the trajectory colors consistent.
+    # Passing 'inferred_c' will trigger the red hatched boxes in your plotting function.
+    title_inferred = "MOCI Inferred Constraints (Red Hatched)"
+
+
+
+    gw.plot_grid_setup( mdp=mdp,  title=title_inferred, demos=all_demos, resp=resp, inf_c=inferred_c)  # <--- This replaces the ground-truth visualization with the algorithm's output
+
+
+    print("Inferred Constraints:", sorted(list(inferred_c)))
+    print("Final Weights:", final_weights)
+    print("Final Priors:", final_priors)
+
+    # Assuming final_weights[0] mapped to the Grass-Lover cluster
+    print("Learned Preferences for Cluster 1:", np.round(final_weights[0], 2))
+    # Expected output: Something like [ 0.1,  2.5, -1.8, -0.5]
+    # High positive weight for index 1 (Grass), negative for index 2 (Rock)
+
+    # Assuming final_weights[1] mapped to the Rock-Lover cluster
+    print("Learned Preferences for Cluster 2:", np.round(final_weights[1], 2))
+    # Expected output: Something like [-0.2, -2.1,  3.0, -0.4]
+    # High positive weight for index 2 (Rock), negative for index 1 (Grass)
+
+    gw.plot_preference_recovery(w1, w2, final_weights, features=['Sand', 'Grass', 'Rocks', 'Water'])
