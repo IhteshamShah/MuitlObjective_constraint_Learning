@@ -1,3 +1,6 @@
+
+import os
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -5,36 +8,6 @@ import gridworld as gw
 import MOCI_IRL as moci
 
 
-
-def run_em_moci(mdp, D, K, d_DKL, max_em_iters=10):
-    """
-    Main loop for Multi-Expert MLCI using Expectation-Maximization.
-    """
-    # Step 0: Initialization
-    C_hat = set()
-    num_features = mdp.num_features
-    weights = [np.random.randn(num_features) * 0.1 for _ in range(K)]
-    priors = np.full(K, 1.0 / K)
-    
-    for em_iter in range(max_em_iters):
-        print(f"--- EM Iteration {em_iter + 1} ---")
-        
-        # Step 1: E-Step (Expectation)
-        responsibilities = moci.e_step(mdp, D, C_hat, weights, priors)
-        
-        # Step 2: M-Step (Maximization)
-        # A. Update Cluster Priors: pi_k = (1/|D|) * sum_{i=1}^{|D|} gamma_{i,k}
-        priors = np.mean(responsibilities, axis=0)
-        
-        # B. Update Reward Weights w_k
-        weights = moci.m_step_weights(mdp, D, C_hat, weights, responsibilities)
-        
-        # C. Update Constraints
-        C_hat = moci.m_step_constraints(mdp, D, C_hat, weights, priors, d_DKL)
-        
-        print(f"Current Inferred Constraints: {sorted(list(C_hat))}")
-        
-    return C_hat, weights, priors
 
 def define_mdp_and_demos():
     """Helper function to define the MDP and generate expert demonstrations."""
@@ -102,7 +75,8 @@ if __name__ == "__main__":
     # Example: all_demos = [...]
     w1,w2, WATER, mdp, all_demos, resp = define_mdp_and_demos()
     # Run the Expectation Maximization-MOCI (em_moci) framework
-    inferred_c, final_weights, final_priors = run_em_moci(mdp, all_demos, K=2, d_DKL=0.05, max_em_iters=10)
+
+    inferred_c, final_weights, final_priors = moci.run_em_moci(mdp, all_demos, K=2, d_DKL=0.05, max_em_iters=10)
 
 
     print(f"Ground Truth WATER tiles: {WATER}")
@@ -112,7 +86,9 @@ if __name__ == "__main__":
     # Passing 'inferred_c' will trigger the red hatched boxes in your plotting function.
     title_inferred = "MOCI Inferred Constraints (Red Hatched)"
 
-
+        # Create the Results directory if it doesn't exist
+    results_dir = "Results"
+    os.makedirs(results_dir, exist_ok=True)
 
     gw.plot_grid_setup( mdp=mdp,  title=title_inferred, demos=all_demos, resp=resp, inf_c=inferred_c)  # <--- This replaces the ground-truth visualization with the algorithm's output
 
@@ -132,3 +108,5 @@ if __name__ == "__main__":
     # High positive weight for index 2 (Rock), negative for index 1 (Grass)
 
     gw.plot_preference_recovery(w1, w2, final_weights, features=['Sand', 'Grass', 'Rocks', 'Water'])
+
+ 

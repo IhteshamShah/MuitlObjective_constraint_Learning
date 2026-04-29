@@ -68,7 +68,7 @@ def sample_traj(mdp, weights, Z):
     return traj
 
 # ==========================================
-# EM-MLCI ALGORITHM FUNCTIONS
+# EM-MOCI ALGORITHM FUNCTIONS
 # ==========================================
 
 def identify_candidates(mdp, D):
@@ -141,7 +141,25 @@ def m_step_weights(mdp, D, C_hat, weights, responsibilities, lr=0.1, steps=5):
             
     return new_weights
 
-def calculate_joint_log_likelihood(mdp, D, C, weights, priors):
+def calculate_joint_log_likelihood (mdp, D, C, weights, priors):
+    """
+    Math: L_{avg}(C, {w_k}, {pi_k}) = (1/|D|) * sum_{xi in D} log ( sum_{k=1}^K pi_k * P(xi | C, w_k) * I^C(xi) )
+    """
+    total_log_L = 0
+    Zs = [backward_pass(mdp, weights[k], C) for k in range(len(weights))]
+    
+    for xi in D:
+        log_probs = []
+        for k in range(len(weights)):
+            log_prob = calculate_trajectory_prob(mdp, xi, C, weights[k], Zs[k])
+            log_probs.append(np.log(priors[k]) + log_prob)
+        # sum_{xi} log( sum_{k} e^{log_probs} )
+        total_log_L += logsumexp(log_probs)
+        
+    # === NEW: Implement L_avg by dividing by dataset size ===
+    return total_log_L / len(D)
+
+def calculate_joint_log_likelihood_old (mdp, D, C, weights, priors):
     """
     Math: L(C, {w_k}, {pi_k}) = sum_{xi in D} log ( sum_{k=1}^K pi_k * P(xi | C, w_k) * I^C(xi) )
     """
@@ -190,3 +208,33 @@ def m_step_constraints(mdp, D, C_hat, weights, priors, d_DKL):
         current_L = best_L
         
     return C_hat
+
+def run_em_moci(mdp, D, K, d_DKL, max_em_iters):
+    """
+    Main loop for Multi-Expert MLCI using Expectation-Maximization.
+    """
+    # Step 0: Initialization
+    C_hat = set()
+    num_features = mdp.num_features
+    weights = [np.random.randn(num_features) * 0.1 for _ in range(K)]
+    priors = np.full(K, 1.0 / K)
+    
+    for em_iter in range(max_em_iters):
+        print(f"--- EM Iteration {em_iter + 1} ---")
+        
+        # Step 1: E-Step (Expectation)
+        responsibilities = e_step(mdp, D, C_hat, weights, priors)
+        
+        # Step 2: M-Step (Maximization)
+        # A. Update Cluster Priors: pi_k = (1/|D|) * sum_{i=1}^{|D|} gamma_{i,k}
+        priors = np.mean(responsibilities, axis=0)
+        
+        # B. Update Reward Weights w_k
+        weights = m_step_weights(mdp, D, C_hat, weights, responsibilities)
+        
+        # C. Update Constraints
+        C_hat = m_step_constraints(mdp, D, C_hat, weights, priors, d_DKL)
+        
+        print(f"Current Inferred Constraints: {sorted(list(C_hat))}")
+        
+    return C_hat, weights, priors
