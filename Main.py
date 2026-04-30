@@ -6,13 +6,8 @@ import gridworld as gw
 import MOCI_IRL as moci
 import Sensitivity_Scalability_analysis as SSA
 
-
-
-
-
-def define_mdp_and_demos():
-    """Helper function to define the MDP and generate expert demonstrations."""
-    # --- STEP 1: DEFINE GRIDWORLD SIZE ---
+"""Helper function to define the MDP and generate expert demonstrations."""
+# --- STEP 1: DEFINE GRIDWORLD SIZE ---
 
 # 5×5 GridWorld            6×6 GridWorld              7×7 GridWorld                 8×8 GridWorld
 # ------------------------------------------------------------------------------------------------
@@ -24,28 +19,32 @@ def define_mdp_and_demos():
 #                          [30 31 32 33 34 35 ]        [35 36 37 38 39 40 41 ]        [40 41 42 43 44 45 46 47 ]
 #                                                       [42 43 44 45 46 47 48 ]        [48 49 50 51 52 53 54 55 ]
 #                                                                                      [56 57 58 59 60 61 62 63 ]
-    '''
-    GRID_SIZE = 5 
+'''
+GRID_SIZE = 5 
 
-    # --- STEP 2: DEFINE TERRAIN STATES (indices) ---
-    WATER = [12,13] # RIVER / HARD CONSTRAINTS
-    GRASS = [3,7,14]
-    ROCKS = [10,11,21]
-    '''
-    # --- STEP 2: DEFINE TERRAIN STATES (indices) ---
-    GRID_SIZE = 8
-    WATER = [12,17,38, 42, 43] # RIVER / HARD CONSTRAINTS
-    GRASS = [3,7,12,13,29, 32, 33, 19,39,49]
-    ROCKS = [20, 6,11,21,25,26,32,40,51,52,53]
+# --- STEP 2: DEFINE TERRAIN STATES (indices) ---
+WATER = [12,13] # RIVER / HARD CONSTRAINTS
+GRASS = [3,7,14]
+ROCKS = [10,11,21]
+'''
+# --- STEP 2: DEFINE TERRAIN STATES (indices) ---
+GRID_SIZE = 8
+WATER = [12,17,38, 42, 43] # RIVER / HARD CONSTRAINTS
+GRASS = [3,7,12,13,29, 32, 33, 19,39,49]
+ROCKS = [20, 6,11,21,25,26,32,40,51,52,53]
 
-    # --- STEP 3: DEFINE DEMONSTRATION COUNTS ---
-    N_DEMOS_EXPERT1 = 10
-    N_DEMOS_EXPERT2 = 10
-    mdp = gw.CustomizableFeatureMDP(GRID_SIZE, WATER, GRASS, ROCKS)
-    
-    # Define Preferences [Sand, Grass, Rock, Water]
-    w1 = np.array([1.0, 3.0, -1, -10.0]) # Expert 1: Grass Lover
-    w2 = np.array([1.0, -1, 3.0, -10.0]) # Expert 2: Rock Lover
+# --- STEP 3: DEFINE DEMONSTRATION COUNTS ---
+N_DEMOS_EXPERT1 = 10
+N_DEMOS_EXPERT2 = 10
+mdp = gw.CustomizableFeatureMDP(GRID_SIZE, WATER, GRASS, ROCKS)
+
+# Define Preferences [Sand, Grass, Rock, Water]
+w1 = np.array([1.0, 3.0, -1, -10.0]) # Expert 1: Grass Lover
+w2 = np.array([1.0, -1, 3.0, -10.0]) # Expert 2: Rock Lover
+
+
+
+def define_mdp_and_demos():
     
     # Generate Demos
     z1 = moci.backward_pass(mdp, w1, WATER)

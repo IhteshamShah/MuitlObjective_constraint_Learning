@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import gridworld as gw
 import MOCI_IRL as moci
+import comparison_with_Exs_tech as exs
 
 
 
@@ -75,6 +76,7 @@ if __name__ == "__main__":
     # Example: all_demos = [...]
     w1,w2, WATER, mdp, all_demos, resp = define_mdp_and_demos()
     # Run the Expectation Maximization-MOCI (em_moci) framework
+    print ("all_demos", all_demos)
 
     inferred_c, final_weights, final_priors = moci.run_em_moci(mdp, all_demos, K=2, d_DKL=0.05, max_em_iters=10)
 
@@ -84,29 +86,31 @@ if __name__ == "__main__":
 
     # We use the same 'resp' array to keep the trajectory colors consistent.
     # Passing 'inferred_c' will trigger the red hatched boxes in your plotting function.
-    title_inferred = "MOCI Inferred Constraints (Red Hatched)"
+    #title_inferred = "MOCI Inferred Constraints (Red Hatched)"
 
         # Create the Results directory if it doesn't exist
-    results_dir = "Results"
-    os.makedirs(results_dir, exist_ok=True)
+    #results_dir = "Results"
+    #os.makedirs(results_dir, exist_ok=True)
 
-    gw.plot_grid_setup( mdp=mdp,  title=title_inferred, demos=all_demos, resp=resp, inf_c=inferred_c)  # <--- This replaces the ground-truth visualization with the algorithm's output
+    #gw.plot_grid_setup( mdp=mdp,  title=title_inferred, demos=all_demos, resp=resp, inf_c=inferred_c)  # <--- This replaces the ground-truth visualization with the algorithm's output
 
 
-    print("Inferred Constraints:", sorted(list(inferred_c)))
-    print("Final Weights:", final_weights)
-    print("Final Priors:", final_priors)
+    #print("Inferred Constraints:", sorted(list(inferred_c)))
+    #print("Final Weights:", final_weights)
+    #print("Final Priors:", final_priors)
 
     # Assuming final_weights[0] mapped to the Grass-Lover cluster
-    print("Learned Preferences for Cluster 1:", np.round(final_weights[0], 2))
+    #print("Learned Preferences for Cluster 1:", np.round(final_weights[0], 2))
     # Expected output: Something like [ 0.1,  2.5, -1.8, -0.5]
     # High positive weight for index 1 (Grass), negative for index 2 (Rock)
 
     # Assuming final_weights[1] mapped to the Rock-Lover cluster
-    print("Learned Preferences for Cluster 2:", np.round(final_weights[1], 2))
+    #print("Learned Preferences for Cluster 2:", np.round(final_weights[1], 2))
     # Expected output: Something like [-0.2, -2.1,  3.0, -0.4]
     # High positive weight for index 2 (Rock), negative for index 1 (Grass)
 
-    gw.plot_preference_recovery(w1, w2, final_weights, features=['Sand', 'Grass', 'Rocks', 'Water'])
+    #gw.plot_preference_recovery(w1, w2, final_weights, features=['Sand', 'Grass', 'Rocks', 'Water'])
+    estimated_constraints= exs.run_mlci_inference(mdp, all_demos, d_kl_threshold=0.1, max_constraints=20)
+    print(f"Estimated Constraints from MLCI: {estimated_constraints}")
 
  
