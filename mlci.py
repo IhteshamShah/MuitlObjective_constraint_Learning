@@ -193,17 +193,17 @@ def run_algo(mock_trajs, true_constraints, size):
     # 1. Initialize Nominal MDP (5x5 grid)
     mdp = SimpleGridMDP(size)
     
-    # 2. Define "True" Hard Constraints (e.g., states 12 and 13 are walls)
-    # The expert will avoid these, but the nominal MDP doesn't know about them yet.
-    true_constraints = {12, 13}
+    # # 2. Define "True" Hard Constraints (e.g., states 12 and 13 are walls)
+    # # The expert will avoid these, but the nominal MDP doesn't know about them yet.
+    # true_constraints = {12, 13}
     
-    # 3. Generate Mock Expert Trajectories that avoid 12 and 13
-    # Trajectory format: list of (state, action)
-    mock_trajs = [
-        [(0, 3), (1, 3), (2, 3), (3, 1), (8, 1), (13, 3), (14, 1), (19, 1), (24, None)], # Suboptimal, ignores constraints intentionally for mock
-        [(5, 3), (6, 1), (11, 1), (16, 3), (17, 3), (18, 3), (19, 1), (24, None)],       # Avoids 12, 13
-        [(0, 1), (5, 1), (10, 1), (15, 1), (20, 3), (21, 3), (22, 3), (23, 3), (24, None)] # Bottom edge path
-    ]
+    # # 3. Generate Mock Expert Trajectories that avoid 12 and 13
+    # # Trajectory format: list of (state, action)
+    # mock_trajs = [
+    #     [(0, 3), (1, 3), (2, 3), (3, 1), (8, 1), (13, 3), (14, 1), (19, 1), (24, None)], # Suboptimal, ignores constraints intentionally for mock
+    #     [(5, 3), (6, 1), (11, 1), (16, 3), (17, 3), (18, 3), (19, 1), (24, None)],       # Avoids 12, 13
+    #     [(0, 1), (5, 1), (10, 1), (15, 1), (20, 3), (21, 3), (22, 3), (23, 3), (24, None)] # Bottom edge path
+    # ]
     
     print(f"True hidden constraints: {true_constraints}")
     print("Running MLCI to infer constraints...")

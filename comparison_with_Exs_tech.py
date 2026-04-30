@@ -1,11 +1,11 @@
 
-from mlci import run_algo
+import time 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import gridworld as gw
 import MOCI_IRL as moci
-import Sensitivity_Scalability_analysis as SSA
+from mlci import run_algo
 
 
 """Helper function to define the MDP and generate expert demonstrations."""
@@ -25,7 +25,7 @@ import Sensitivity_Scalability_analysis as SSA
 GRID_SIZE = 6 
 
 # --- STEP 2: DEFINE TERRAIN STATES (indices) ---
-WATER = [12,13,22] # RIVER / HARD CONSTRAINTS
+WATER = [12,13,22,26] # RIVER / HARD CONSTRAINTS
 GRASS = [3,7,14]
 ROCKS = [10,11,21]
 
@@ -168,66 +168,31 @@ if __name__ == "__main__":
     GRID_SIZE, w1,w2, WATER, mdp, demos_mlci_format, demos_moci_format, resp = define_mdp_and_demos()
     # Run the Expectation Maximization-MOCI (em_moci) framework
     
-    inferred_c, final_weights, final_priors = moci.run_em_moci(mdp, demos_moci_format, K=2, d_DKL=0.05, max_em_iters=10)
+    # --- Calculate Time and constraint for MOCI ---
+    start_moci = time.time()
+    inferred_c, final_weights, final_priors = moci.run_em_moci( mdp, demos_moci_format, K=2, d_DKL=0.05, max_em_iters=1)
+    end_moci = time.time()
+    moci_duration = end_moci - start_moci
 
-
-        # 4. Run MLCI
+    # --- Calculate Time and constraints for MLCI ---
+    start_mlci = time.time()
     inferred_constraints = run_algo(demos_mlci_format, WATER, GRID_SIZE)
+    end_mlci = time.time()
+    mlci_duration = end_mlci - start_mlci
+
+    # --- Calculate mean squared errors for MOCI and MLCI ---
+    mse_moci = calculate_cmse(WATER, inferred_c, mdp.num_states)
+    mse_mlci = calculate_cmse(WATER, inferred_constraints, mdp.num_states)
+
+    
+    
+    # --- Print the results ---
     
     print("\nFinal Result:")
     print(f"Ground Truth WATER tiles: {WATER}",f"Inferred Constraints MOCI: {list(inferred_c)}", f"Inferred Constraints MLCI: {inferred_constraints}")
 
-    mse_moci = calculate_cmse(WATER, inferred_c, mdp.num_states)
     print(f"Constraint Mean Squared Error for MOCI: {mse_moci}")
-    mse_mlci = calculate_cmse(WATER, inferred_constraints, mdp.num_states)
     print(f"Constraint Mean Squared Error for MLCI: {mse_mlci}")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Assuming 'moci', 'mdp', and 'WATER' are already defined
-N_DEMOS_EXPERT1 = 5
-N_DEMOS_EXPERT2 = 5
-
-w1 = np.array([1.0, 3.0, -1.0, -10.0]) # Expert 1: Grass Lover
-w2 = np.array([1.0, -1.0, 3.0, -10.0]) # Expert 2: Rock Lover
-
-z1 = moci.backward_pass(mdp, w1, WATER)
-z2 = moci.backward_pass(mdp, w2, WATER)
-
-# Initialize the two dataset lists
-demos_moci_format = []  # List of state-only lists
-demos_mlci_format = []  # List of state-action tuple lists
-
-# Generate for Expert 1
-for _ in range(N_DEMOS_EXPERT1):
-    t_states, t_sa = sample_traj_both_formats(mdp, w1, z1)
-    demos_moci_format.append(t_states)
-    demos_mlci_format.append(t_sa)
-
-# Generate for Expert 2
-for _ in range(N_DEMOS_EXPERT2):
-    t_states, t_sa = sample_traj_both_formats(mdp, w2, z2)
-    demos_moci_format.append(t_states)
-    demos_mlci_format.append(t_sa)
-
-# --- Verification ---
-print("--- MOCI Format (States Only) ---")
-print(demos_moci_format[0])
-
-print("\n--- MLCI Format (State-Action Pairs) ---")
-print(demos_mlci_format[0])
+    print(f"MOCI Run-time: {moci_duration:.4f} seconds")
+    print(f"MLCI Run-time: {mlci_duration:.4f} seconds")
