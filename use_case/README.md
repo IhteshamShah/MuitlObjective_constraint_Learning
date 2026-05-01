@@ -20,10 +20,13 @@ The original UvA/PADOVA simglucose simulator has been extended in the following 
 
 
 # Installation
+This use case only works with Python 3.10 as far as has been tested. Later vsions may not work due to simglucose incompatibility.
+
 The easiest way to install is to install editable files as follows in your favorite virtual environment:
 ```bash
-cd simglucose
+cd _simglucose
 pip install -e .
+pip install setuptools\<=80.10.2 # necessary for pkg_resources removal
 ```
 
 To test the installation:

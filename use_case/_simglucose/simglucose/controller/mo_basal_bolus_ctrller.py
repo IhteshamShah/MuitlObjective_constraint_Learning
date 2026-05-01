@@ -9,8 +9,8 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 package_path = resources.files('simglucose')
-CONTROL_QUEST = str(package_path / "simglucose" / 'params' / 'Quest.csv')
-PATIENT_PARA_FILE = str(package_path / "simglucose" / 'params' / 'vpatient_params.csv')
+CONTROL_QUEST = str(package_path / 'params' / 'Quest.csv')
+PATIENT_PARA_FILE = str(package_path / 'params' / 'vpatient_params.csv')
 
 class MOBBExerciseController(Controller):
     def __init__(self, target=140, exercise_threshold=100, preference='neutral'):

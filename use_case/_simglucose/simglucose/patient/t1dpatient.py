@@ -16,7 +16,7 @@ Observation = namedtuple("observation", ["Gsub"])
 
 # Modern resource access (Python 3.9+)
 package_path = resources.files("simglucose")
-PATIENT_PARA_FILE = str(package_path / "simglucose" / "params" / "vpatient_params.csv")
+PATIENT_PARA_FILE = str(package_path / "params" / "vpatient_params.csv")
 
 
 class T1DPatient(Patient):

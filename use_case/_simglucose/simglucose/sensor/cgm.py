@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Modern resource access
 package_path = resources.files('simglucose')
-SENSOR_PARA_FILE = str(package_path / "simglucose" / "params" / "sensor_params.csv")
+SENSOR_PARA_FILE = str(package_path / "params" / "sensor_params.csv")
 
 
 class CGMSensor(object):

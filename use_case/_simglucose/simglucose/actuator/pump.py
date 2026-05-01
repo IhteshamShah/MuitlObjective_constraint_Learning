@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Modern resource access
 package_path = resources.files('simglucose')
-INSULIN_PUMP_PARA_FILE = str(package_path / "simglucose" / "params" / "pump_params.csv")
+INSULIN_PUMP_PARA_FILE = str(package_path / "params" / "pump_params.csv")
 
 
 class InsulinPump(object):
