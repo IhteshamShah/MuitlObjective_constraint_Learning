@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import gridworld as gw
 import MOCI_IRL as moci
-from mlci import run_algo
+from max_Likly_CI_ExistingWork import run_algo
 
 
 """Helper function to define the MDP and generate expert demonstrations."""

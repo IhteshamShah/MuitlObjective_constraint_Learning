@@ -1,0 +1,35 @@
+Lung Cancer Longitudinal Dataset Description
+
+This dataset contains longitudinal follow-up information for lung cancer patients across multiple timepoints (0, 6, 12, 18, and 24 months). Each row represents one patient at one timepoint, and the same patient can appear across several visits.
+
+Data structure:
+- sympro_respondent: patient identifier
+- timepoint_month: visit month (0, 6, 12, 18, 24)
+- bas_dem_gender: patient sex
+- Leeftijd_bj_diagnose: age at diagnosis
+- Roken: smoking status
+- tnm: tumor stage classification
+- perf_status: performance status score
+- therapy: treatment received
+- tumor_size: current tumor size
+- meta: metastasis or event indicator
+- tumor_size_prev: tumor size at the previous visit
+- perf_prev: performance status at the previous visit
+
+Target outcome:
+- meta: indicates whether the patient had the event (for example, progression or survival-related adverse outcome) at that timepoint.
+- The dataset is suitable for longitudinal risk modeling, survival prediction, treatment optimization, and time-specific prediction tasks.
+
+The dataset is organized for research on patient trajectories, treatment effects, and quality-of-life/survival modeling over time.
+
+Additional realistic QoL and survival columns in the second version:
+- QoL: quality of life score, scaled from 0 to 100, where higher values indicate better quality of life
+- survival_time_months: estimated survival time in months
+- survival_status: Alive or Dead
+- event_indicator: whether the patient experienced the event
+- treatment_intensity: treatment burden/intensity
+- treatment_response: treatment response category
+- treatment_line: treatment line or time-stage of therapy
+- treatment_ongoing: whether treatment is ongoing
+
+This dataset is designed for longitudinal clinical research and machine learning studies focused on treatment optimization and survival-risk prediction.
