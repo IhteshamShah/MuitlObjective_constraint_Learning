@@ -1,5 +1,4 @@
-"""MOCI-IRL implements an EM-based multi-expert inverse reinforcement learning algorithm
-that jointly infers per-cluster reward weights, cluster membership priors, and a set of
+"""MOCI-IRL jointly infers per-cluster reward weights, and a set of
 hard constraints (forbidden states or state-action pairs) from expert demonstrations. It
 provides MaxEnt IRL primitives (backward_pass, trajectory sampling and log-likelihood), an
 E-step/M-step EM loop (e_step, m_step_weights, m_step_constraints, run_em_moci) with a

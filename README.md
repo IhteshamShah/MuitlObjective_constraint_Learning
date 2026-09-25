@@ -1,11 +1,10 @@
 # MOCI: Multi-Objective Constraint Inference
 
-MOCI is an EM-based inverse reinforcement learning algorithm. It takes a pool of
-demonstrations from several experts whose preferences differ and are unknown, and
+MOCI takes a pool of demonstrations from several experts whose preferences differ and are unknown, and
 recovers two things together: (a) the reward weights of each expert cluster and
 (b) one shared set of hidden hard constraints that every expert avoids. This
 repository contains the core algorithm (`MOCI_IRL.py`) and applies it to two use
-cases: a synthetic GridWorld and a lung-cancer treatment-planning MDP. It also
+cases: a GridWorld and a lung-cancer treatment-planning MDP. It also
 includes additional sensitivity, scalability and ablation experiments.
 
 ## Repository structure
