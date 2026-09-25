@@ -11,9 +11,6 @@
 *.tex
 *.log
 
-# Keep the lung-cancer input dataset
-use_case/Lung_cancer/lung_cancer_cirl_dataset_realistic_nice.csv
-
 # Python
 __pycache__/
 *.py[cod]
