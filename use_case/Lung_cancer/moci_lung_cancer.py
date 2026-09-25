@@ -1,77 +1,21 @@
-"""MOCI-IRL on the lung-cancer C-IRL dataset.
-
-This script learns a two-cluster preference model from longitudinal oncology data.
-It follows the conventions from the dataset description file and the clinical C-IRL
-setup used for lung cancer treatment planning.
-
-What the code represents
-------------------------
-State space:
-    Each patient-timepoint is represented by a discrete state that combines:
-    - baseline patient context: age, sex, smoking status
-    - tumor burden: TNM stage, tumor size, metastasis indicator, treatment response
-    - biomarker suitability: EGFR mutation, ALK translocation, PD-L1 expression
-    - safety and organ reserve: eGFR, FEV1, toxicity grade, ECOG performance status
-    - longitudinal context: treatment line and visit month
-    - feasibility masks: targeted/immuno/chemo action masks from the data
-
-    These features define a finite clinical state space S. We discretize them into
-    bins to fit the generic MOCI-IRL transition model.
-
-Action space:
-    The nominal clinical action set is:
-        A = {Targeted, Immuno, Chemo}
-    The dataset also includes action masks:
-        action_mask_targeted, action_mask_immuno, action_mask_chemo
-    These masks encode whether each action is clinically feasible for a patient at a
-    specific timepoint. In practice, the generic MOCI optimizer expects a fixed 5-slot
-    action interface, so we keep the 3 real therapy actions as the primary actions and
-    leave the remaining slots as fallback entries. Feasibility is enforced by the state
-    masks and by only allowing transitions consistent with the observed feasible actions.
-
-Preferences:
-    The learned reward vector is two-dimensional:
-        w = [w_QoL, w_survival]
-    The two preference clusters represent different clinical priorities:
-      - a QoL-first policy, emphasizing quality-of-life preservation
-      - a survival-first policy, emphasizing longer survival and disease control
-    MOCI-IRL learns these preferences from patient trajectories without hard-coding the
-    weights in advance.
-
-Constraints:
-    Constraints are modeled as state-dependent feasibility masks. A treatment action is
-    considered valid only if its mask is 1 for that patient-state pair. Formally,
-        C(s_t, a_t) = 0 if a_t in A(s_t), else 1
-    This forces the learned solution to respect physiologic and biomarker limitations
-    (toxicity, renal function, lung reserve, targeted therapy eligibility, PD-L1 status,
-    and patient-specific eligibility).
-
-How the learning works:
-    1. Patient trajectories are built from repeated longitudinal visits.
-    2. Each visit is assigned to a discrete clinical state.
-    3. A finite MDP is constructed with these states and action-compatible transitions.
-    4. MOCI-IRL runs EM over K=2 preference clusters.
-    5. The algorithm alternates:
-         E-step: assign each patient trajectory to the most likely preference cluster
-         M-step: update reward weights and infer hard-state constraints
-    6. Final outputs include the learned reward vectors and the inferred constraint states.
-
-What the results show:
-    The final summary contains the learned priors and weight vectors. The cluster with the
-    larger weight on survival represents a survival-first preference; the cluster with the
-    larger QoL alignment represents a QoL-first preference. The report is useful for
-    identifying whether the observed lung-cancer treatment trajectories are better explained
-    by a survival-oriented policy or a QoL-preserving policy under the feasibility masks.
+"""Builds a clinical MDP from a longitudinal lung-cancer dataset by discretizing
+patient visits into states, mapping recorded therapies to actions, and estimating
+action-conditioned transitions and QoL/survival feature maps. Runs MOCI-IRL (from
+the local MOCI_IRL.py) over K=2 preference clusters with bootstrap-restart
+ensembling to learn reward weights and state-action treatment constraints.
+Compares inferred constraints against clinical eligibility masks to compute
+TP/FP/eligibility detection metrics, including per-action and threshold-sweep
+analyses, and saves the learned preferences, constraints, metrics, and a JSON
+summary to disk.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -83,16 +27,17 @@ if str(ROOT) not in sys.path:
 
 import MOCI_IRL as moci
 
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
+
+import MOCI_IRL as moci
+from MOCI_IRL import SearchOptions
+
 
 DATA_PATH = Path(__file__).with_name("lung_cancer_cirl_dataset_realistic_nice.csv")
-if not DATA_PATH.exists():
-    DATA_PATH = Path(__file__).with_name("lung_cancer_cirl_dataset_realistic.csv")
-if not DATA_PATH.exists():
-    DATA_PATH = Path(__file__).with_name("lung_cancer_cirl_dataset.csv")
-if not DATA_PATH.exists():
-    DATA_PATH = Path(__file__).with_name("lung_cancer_data.csv")
-RESULTS_DIR = Path(__file__).with_name("results")
-RESULTS_DIR.mkdir(exist_ok=True)
+RESULTS_DIR = ROOT / "Results" / "results_lung_cancer"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 THERAPY_TO_ACTION = {
     "Targeted": 0,
@@ -105,19 +50,9 @@ THERAPY_TO_ACTION = {
 ACTION_NAMES = ["Targeted", "Immuno", "Chemo", "Surgery"]
 FEATURE_LABELS = ["QOL", "Survival"]
 ACTION_MASK_COLUMNS = ["action_mask_targeted", "action_mask_immuno", "action_mask_chemo", "action_mask_surgery"]
-PLOT_FILENAMES = {
-    "preferences": "figure_1_preference_weights.png",
-    "priors": "figure_2_cluster_priors.png",
-    "feasibility": "figure_3_action_feasibility.png",
-    "longitudinal": "figure_4_longitudinal_outcomes.png",
-    "tp_fp": "figure_5_true_false_positive_rates.png",
-    "tp_fp_by_action": "figure_6_per_action_tpr_fpr.png",
-    "threshold_sweep": "figure_7_threshold_sweep_roc.png",
-    "restart_recall_precision": "figure_8_restart_recall_precision.png",
-}
 
 TRAIN_MAX_PATIENTS = 100
-NUM_RESTARTS = 8
+NUM_RESTARTS = 6
 EM_MAX_ITERS = 12
 DKL_THRESHOLD = 0.02
 LEARNED_CONSTRAINT_THRESHOLD = 0.125
@@ -126,12 +61,44 @@ SEED_BASE = 17
 CANDIDATE_SUBSET_SIZE = None
 BOOTSTRAP_RESTARTS = True
 
-# Hybrid threshold policy: per-action minimum recall targets with FPR caps.
+LAMBDA_PENALTY = "bic"
+
+USE_SAFETY_PREFILTER = True
+
+SEARCH_MODE = "frozen"
+LIKELIHOOD = "local"
+WEIGHT_BOUND = None
+REFIT_ITERS = 3
+CANDIDATE_EPSILON = None
+CANDIDATE_MAX_COUNT = 0
+VIOLATION_NOISE = None
+RANK_BY_DISCREPANCY = False
+GENERALIZE_CONSTRAINTS = "rule"
+RUN_DIAGNOSTICS = True
+LAMBDA_SWEEP_GRID = [1e-5, 0.05, 0.25, 0.5, 1.0, 1.7, 3.0, 5.0, 10.0]
+SHADOW_MAX_ROUNDS = 80
+
+ACTION_SIGNATURE_FIELDS = {
+    0: (6, 7, 8),
+    1: (5, 8),
+    2: (1, 8),
+    3: (0, 1, 4, 8),
+}
+
+SAFETY_THRESHOLDS = {
+    "max_toxicity_grade": 3,
+    "min_egfr_ml_min": 50.0,
+    "min_fev1_chemo_pct": 45.0,
+    "min_fev1_surgery_pct": 50.0,
+    "max_ecog": 2,
+    "min_pdl1_pct": 1.0,
+}
+
 ACTION_MIN_RECALL = {
-    0: 0.08,  # Targeted
-    1: 0.08,  # Immuno
-    2: 0.03,  # Chemo
-    3: 0.06,  # Surgery
+    0: 0.08,
+    1: 0.08,
+    2: 0.03,
+    3: 0.06,
 }
 ACTION_MAX_FPR = {
     0: 0.18,
@@ -152,19 +119,16 @@ class ClinicalMDP:
     num_features: int
     num_actions: int
     num_states: int
+    safety_screen: set[tuple[int, int]] = field(default_factory=set)
 
 
 def _safe_numeric(series: pd.Series, fill_value: float = 0.0) -> pd.Series:
+    """Params: series, fill_value (used for non-numeric/NaN entries). Returns: numeric pd.Series."""
     return pd.to_numeric(series, errors="coerce").fillna(fill_value)
 
 
 def load_and_prepare_dataset() -> pd.DataFrame:
-    """Load the lung-cancer dataset and apply clinically meaningful preprocessing.
-
-    The dataset is longitudinal: each patient appears across multiple timepoints.
-    MOCI needs a set of patient trajectories, so we preserve the time ordering and
-    enrich the record with patient-level outcome summaries.
-    """
+    """Params: none. Returns: the loaded and preprocessed lung-cancer DataFrame."""
     df = pd.read_csv(DATA_PATH)
     df.columns = [c.strip() for c in df.columns]
     df = df.sort_values(["sympro_respondent", "timepoint_month"]).copy()
@@ -193,8 +157,6 @@ def load_and_prepare_dataset() -> pd.DataFrame:
     max_survival = max(1.0, df["survival_score"].max())
     df["survival_score_norm"] = df["survival_score"] / max_survival
 
-    # Patient-level conclusion: longer survival and better QoL correspond to more
-    # desirable outcomes. This sits naturally with the two preference goals in the prompt.
     df["patient_alive"] = df.groupby("sympro_respondent")["survival_status"].transform(lambda s: s.iloc[-1] == "Alive")
     df["patient_survival_rank"] = df.groupby("sympro_respondent")["survival_score"].transform("max")
     df["patient_qol_rank"] = df.groupby("sympro_respondent")["QoL"].transform("max")
@@ -203,11 +165,7 @@ def load_and_prepare_dataset() -> pd.DataFrame:
 
 
 def state_key_for_row(row: pd.Series) -> tuple[int, int, int, int, int, int, int, int, int]:
-    """Convert a clinical timepoint into a discrete state for MOCI.
-
-    The state includes the visit month and the major clinical risk markers.
-    Treatment feasibility masks are used only for post-learning evaluation.
-    """
+    """Params: row (a patient-timepoint record). Returns: discretized state-key tuple."""
     month = int(row.get("timepoint_month", 0) or 0)
     perf = float(row.get("perf_status", 0.0) or 0.0)
     tumor = float(row.get("tumor_size", 0.0) or 0.0)
@@ -248,14 +206,17 @@ def build_patient_trajectories(
     df: pd.DataFrame,
     max_patients: int | None = None,
 ) -> tuple[
-    list[list[int]],
+    list[list[tuple[int, int]]],
     dict[tuple[int, int, int, int, int, int, int, int, int], int],
     dict[int, dict[str, list[float]]],
     dict[tuple[int, int], list[int | None]],
     dict[int, list[int]],
     dict[tuple[int, int], dict[str, list[float]]],
 ]:
-    """Create patient trajectories plus action-conditioned transition/feature summaries."""
+    """Params: df, max_patients (optional cap on number of patients).
+    Returns: (trajectories, state_to_idx, state_stats, transition_records,
+    start_action_records, state_action_stats).
+    """
     patient_groups = []
     for _, patient_df in df.groupby("sympro_respondent", sort=True):
         patient_groups.append(patient_df.sort_values("timepoint_month"))
@@ -264,14 +225,13 @@ def build_patient_trajectories(
         patient_groups = patient_groups[:max_patients]
 
     state_to_idx: dict[tuple[int, int, int, int, int, int, int, int, int], int] = {}
-    trajectories: list[list[int]] = []
+    trajectories: list[list[tuple[int, int]]] = []
     state_stats: dict[int, dict[str, list[float]]] = {}
     transition_records: dict[tuple[int, int], list[int | None]] = {}
     start_action_records: dict[int, list[int]] = {}
     state_action_stats: dict[tuple[int, int], dict[str, list[float]]] = {}
 
     for patient_df in patient_groups:
-        patient_states: list[int] = [0]
         step_state_ids: list[int] = []
         step_actions: list[int] = []
 
@@ -280,7 +240,6 @@ def build_patient_trajectories(
             if key not in state_to_idx:
                 state_to_idx[key] = len(state_to_idx) + 1
             state_id = state_to_idx[key]
-            patient_states.append(state_id)
             step_state_ids.append(state_id)
 
             action = int(row.get("therapy_code", THERAPY_TO_ACTION["Observation"]))
@@ -296,8 +255,11 @@ def build_patient_trajectories(
             state_action_stats[sa]["QoL"].append(float(row.get("QoL", 0.0) or 0.0))
             state_action_stats[sa]["Survival"].append(float(row.get("survival_score_norm", 0.0) or 0.0))
 
-        patient_states.append(len(state_to_idx) + 1)
-        trajectories.append(patient_states)
+        if step_state_ids:
+            demo = [(0, step_actions[0])]
+            demo.extend((sid, act) for sid, act in zip(step_state_ids, step_actions))
+            demo.append((-1, -1))
+            trajectories.append(demo)
 
         if step_state_ids:
             start_action_records.setdefault(step_actions[0], []).append(step_state_ids[0])
@@ -310,11 +272,61 @@ def build_patient_trajectories(
     if not trajectories:
         raise RuntimeError("No patient trajectories were generated from the dataset.")
 
+    goal_id = len(state_to_idx) + 1
+    trajectories = [demo[:-1] + [(goal_id, -1)] for demo in trajectories]
+
     return trajectories, state_to_idx, state_stats, transition_records, start_action_records, state_action_stats
 
 
-def build_clinical_mdp(df: pd.DataFrame, max_patients: int | None = None) -> tuple[ClinicalMDP, list[list[int]]]:
-    """Build a MOCI-compatible MDP from the lung-cancer observational trajectories."""
+def safety_breached_actions(row: pd.Series) -> set[int]:
+    """Params: row (a patient-timepoint record). Returns: set of action indices whose safety thresholds are breached."""
+    th: dict[str, float] = SAFETY_THRESHOLDS
+
+    def num(col: str) -> float:
+        """Params: col (column name). Returns: float value of row[col], or nan if not parseable."""
+        try:
+            return float(row.get(col))
+        except (TypeError, ValueError):
+            return float("nan")
+
+    toxic = num("ctcae_toxicity_grade") >= th["max_toxicity_grade"]
+    poor_perf = num("perf_status") > th["max_ecog"]
+    low_renal = num("egfr_lab_ml_min") < th["min_egfr_ml_min"]
+    no_driver = not (num("egfr_mutation") == 1 or num("alk_translocation") == 1)
+    low_pdl1 = num("pdl1_expression_pct") < th["min_pdl1_pct"]
+
+    breached: set[int] = set()
+    if toxic or no_driver:
+        breached.add(0)
+    if toxic or low_pdl1:
+        breached.add(1)
+    if toxic or low_renal or poor_perf or num("fev1_pct_predicted") < th["min_fev1_chemo_pct"]:
+        breached.add(2)
+    if (
+        toxic
+        or poor_perf
+        or num("fev1_pct_predicted") < th["min_fev1_surgery_pct"]
+        or num("timepoint_month") > 0
+        or num("event_indicator") >= 1.0
+    ):
+        breached.add(3)
+    return breached
+
+
+def build_safety_screen(
+    df: pd.DataFrame,
+    state_to_idx: dict[tuple[int, int, int, int, int, int, int, int, int], int],
+) -> set[tuple[int, int]]:
+    """Params: df, state_to_idx (state-key to state-id map). Returns: set of (state_id, action) pairs that breach safety thresholds."""
+    screen: set[tuple[int, int]] = set()
+    for _, row in df.iterrows():
+        state_id = state_to_idx[state_key_for_row(row)]
+        screen.update((state_id, a) for a in safety_breached_actions(row))
+    return screen
+
+
+def build_clinical_mdp(df: pd.DataFrame, max_patients: int | None = None) -> tuple[ClinicalMDP, list[list[tuple[int, int]]]]:
+    """Params: df, max_patients (optional cap on number of patients). Returns: (ClinicalMDP, trajectories)."""
     trajectories, state_to_idx, state_stats, transition_records, start_action_records, state_action_stats = build_patient_trajectories(
         df, max_patients=max_patients
     )
@@ -328,14 +340,11 @@ def build_clinical_mdp(df: pd.DataFrame, max_patients: int | None = None) -> tup
     transitions = np.full((num_states, num_actions), -1, dtype=int)
     feature_map = np.zeros((num_states, num_actions, 2), dtype=float)
 
-    # Action-aware transition model: for each (state, action), route to the most
-    # frequently observed next state under that specific therapy.
     for (s, a), next_states in transition_records.items():
         mapped_next = [goal_state if sn is None else int(sn) for sn in next_states]
         values, counts = np.unique(np.array(mapped_next, dtype=int), return_counts=True)
         transitions[int(s), int(a)] = int(values[np.argmax(counts)])
 
-    # For unseen actions in a state, back off to the dominant observed next state.
     for s in range(1, num_states - 1):
         observed_next = transitions[s, transitions[s] != -1]
         default_next = int(observed_next[0]) if observed_next.size else goal_state
@@ -379,18 +388,12 @@ def build_clinical_mdp(df: pd.DataFrame, max_patients: int | None = None) -> tup
             if (state_id, action) not in transition_records and incompatible:
                 transitions[state_id, action] = goal_state
 
-    # Do not explicitly impose treatment feasibility before learning.
-    # Fill undefined transitions so the transition model remains total.
     transitions[transitions == -1] = goal_state
 
-    # Build action-conditioned feature summaries; this preserves treatment-specific
-    # outcome differences needed for learning action-specific constraints.
     for state_id in range(1, num_states - 1):
         stats = state_stats.get(state_id, {"QoL": [0.0], "Survival": [0.0]})
         qol_mean = float(np.mean(stats["QoL"])) if stats["QoL"] else 0.0
         surv_mean = float(np.mean(stats["Survival"])) if stats["Survival"] else 0.0
-        # State key layout:
-        # (month, perf_idx, tumor_idx, qol_idx, risk_idx, pdl1_idx, egfr_mut, alk, tox_idx)
         state_key = states_ordered[state_id - 1]
         month = int(state_key[0])
         perf_idx = int(state_key[1])
@@ -465,10 +468,27 @@ def build_clinical_mdp(df: pd.DataFrame, max_patients: int | None = None) -> tup
     mdp.constraint_mode = "state_action"
     mdp.action_feasible_mask = None
 
+    if max_patients is not None:
+        used_ids = sorted(df["sympro_respondent"].unique())[:max_patients]
+        df_used = df[df["sympro_respondent"].isin(used_ids)]
+    else:
+        df_used = df
+    mdp.safety_screen = build_safety_screen(df_used, state_to_idx)
+
+    mdp.constraint_signature = {
+        (state_id, action): tuple(
+            int(min(states_ordered[state_id - 1][i], 1)) if (action == 3 and i == 0) else int(states_ordered[state_id - 1][i])
+            for i in ACTION_SIGNATURE_FIELDS[action]
+        )
+        for state_id in range(1, num_states - 1)
+        for action in range(num_actions)
+    }
+
     return mdp, trajectories
 
 
 def trajectory_from_patient(patient_df: pd.DataFrame, state_to_idx: dict[tuple[int, int, int, int, int, int, int, int, int], int]) -> list[int]:
+    """Params: patient_df, state_to_idx (state-key to state-id map, mutated in place). Returns: list of state ids for the patient."""
     traj = [0]
     for _, row in patient_df.sort_values("timepoint_month").iterrows():
         key = state_key_for_row(row)
@@ -480,7 +500,7 @@ def trajectory_from_patient(patient_df: pd.DataFrame, state_to_idx: dict[tuple[i
 
 
 def action_clinical_reason(row: pd.Series, action_name: str) -> str:
-    """Return the clinical reason why an action is infeasible for a row."""
+    """Params: row, action_name. Returns: short clinical reason string why the action is infeasible, or "allowed"."""
     toxicity = float(row.get("ctcae_toxicity_grade", 0.0) or 0.0)
     egfr_mut = int(row.get("egfr_mutation", 0) or 0)
     alk = int(row.get("alk_translocation", 0) or 0)
@@ -488,6 +508,8 @@ def action_clinical_reason(row: pd.Series, action_name: str) -> str:
     eGFR = float(row.get("egfr_lab_ml_min", 0.0) or 0.0)
     fev1 = float(row.get("fev1_pct_predicted", 0.0) or 0.0)
     perf = float(row.get("perf_status", 0.0) or 0.0)
+    month = int(row.get("timepoint_month", 0) or 0)
+    event = float(row.get("event_indicator", 0.0) or 0.0)
 
     if action_name == "Targeted":
         if toxicity >= 3:
@@ -514,10 +536,24 @@ def action_clinical_reason(row: pd.Series, action_name: str) -> str:
             return "ECOG/perf_status > 2"
         return "allowed"
 
+    if action_name == "Surgery":
+        if month > 0:
+            return "not first-line month"
+        if toxicity >= 3:
+            return "toxicity_grade>=3"
+        if perf > 2:
+            return "ECOG/perf_status > 2"
+        if fev1 < 50:
+            return "FEV1 < 50%"
+        if event >= 1.0:
+            return "high event risk"
+        return "allowed"
+
     return "allowed"
 
 
 def _eligibility_from_masks(row: pd.Series, action_name: str) -> tuple[bool, str]:
+    """Params: row, action_name. Returns: (eligible flag, reason string)."""
     if action_name == "Targeted":
         ok = bool(row.get("action_mask_targeted", 1) == 1)
         return ok, "allowed" if ok else action_clinical_reason(row, action_name)
@@ -529,11 +565,12 @@ def _eligibility_from_masks(row: pd.Series, action_name: str) -> tuple[bool, str
         return ok, "allowed" if ok else action_clinical_reason(row, action_name)
     if action_name == "Surgery":
         ok = bool(row.get("action_mask_surgery", 1) == 1)
-        return ok, "allowed" if ok else "not surgery candidate"
+        return ok, "allowed" if ok else action_clinical_reason(row, action_name)
     return True, "allowed"
 
 
 def _is_predicted_infeasible(inferred_constraints: set, state_id: int, action_idx: int) -> bool:
+    """Params: inferred_constraints, state_id, action_idx. Returns: True if the state or (state, action) pair is in inferred_constraints."""
     if state_id in inferred_constraints:
         return True
     if (state_id, action_idx) in inferred_constraints:
@@ -546,7 +583,7 @@ def build_state_action_summary(
     state_to_idx: dict[tuple[int, int, int, int, int, int, int, int, int], int],
     inferred_constraints: set,
 ) -> list[dict]:
-    """Summarize eligibility labels and learned state-action constraints."""
+    """Params: df, state_to_idx, inferred_constraints. Returns: list of per (state, action) summary dicts."""
     summary: dict[tuple[int, str], dict] = {}
 
     for _, row in df.iterrows():
@@ -596,7 +633,7 @@ def build_state_action_summary(
 
 
 def compute_tp_fp_metrics(state_action_constraints: list[dict], inferred_constraints: set) -> dict:
-    """Compare learned constraints against eligibility masks and compute TP/FP rates."""
+    """Params: state_action_constraints, inferred_constraints (unused, kept for signature compatibility). Returns: dict of TP/FP/TN/FN counts and rates."""
     tp = fp = tn = fn = 0
     for row in state_action_constraints:
         y_true = bool(row.get("eligibility_infeasible", False))
@@ -627,6 +664,7 @@ def compute_tp_fp_metrics(state_action_constraints: list[dict], inferred_constra
 
 
 def compute_per_action_metrics(state_action_constraints: list[dict]) -> list[dict]:
+    """Params: state_action_constraints. Returns: list of per-action TP/FP/TN/FN metric dicts."""
     metrics = []
     for action_name in ACTION_NAMES[:4]:
         subset = [r for r in state_action_constraints if r.get("action") == action_name]
@@ -666,6 +704,7 @@ def build_eval_rows_from_probabilities(
     inferred_probability: dict[tuple[int, int], float],
     threshold: float | dict[int, float],
 ) -> list[dict]:
+    """Params: base_rows, inferred_probability, threshold (float or per-action dict). Returns: base_rows augmented with inferred probability/threshold/infeasibility/match fields."""
     rows = []
     for row in base_rows:
         if "state_key" in row:
@@ -689,8 +728,8 @@ def compute_per_action_thresholds(
     inferred_probability: dict[tuple[int, int], float],
     default_threshold: float,
 ) -> dict[int, float]:
+    """Params: base_rows, inferred_probability, default_threshold (used when an action has no rows). Returns: dict mapping action index to chosen threshold."""
     thresholds: dict[int, float] = {}
-    # Skip 0.0 to avoid the degenerate "predict everything infeasible" solution.
     grid = np.linspace(0.02, 1.0, 50)
 
     for action_idx in range(4):
@@ -744,6 +783,7 @@ def compute_per_action_thresholds(
 
 
 def compute_threshold_sweep(base_rows: list[dict], inferred_probability: dict[tuple[int, int], float]) -> list[dict]:
+    """Params: base_rows, inferred_probability. Returns: list of TP/FP metric dicts across a threshold grid."""
     sweep = []
     for threshold in np.linspace(0.0, 1.0, 21):
         rows = build_eval_rows_from_probabilities(base_rows, inferred_probability, float(threshold))
@@ -766,7 +806,7 @@ def build_reference_eval_rows(
     df: pd.DataFrame,
     state_to_idx: dict[tuple[int, int, int, int, int, int, int, int, int], int],
 ) -> list[dict]:
-    """Build evaluation rows keyed by clinical state signature, not transient state ids."""
+    """Params: df, state_to_idx. Returns: list of per (state-key, action) eligibility summary dicts."""
     summary: dict[tuple[tuple[int, int, int, int, int, int, int, int, int], int], dict] = {}
 
     for _, row in df.iterrows():
@@ -815,7 +855,7 @@ def build_reference_eval_rows(
 
 
 def bootstrap_patient_dataframe(df: pd.DataFrame, sampled_ids: np.ndarray) -> pd.DataFrame:
-    """Create a bootstrap patient cohort where sampled trajectories remain distinct."""
+    """Params: df, sampled_ids (patient ids sampled with replacement). Returns: DataFrame with resampled patients relabeled to distinct ids."""
     groups = {int(pid): g.copy() for pid, g in df.groupby("sympro_respondent", sort=False)}
     chunks = []
     for i, pid in enumerate(sampled_ids.tolist()):
@@ -826,7 +866,7 @@ def bootstrap_patient_dataframe(df: pd.DataFrame, sampled_ids: np.ndarray) -> pd
 
 
 def constraints_to_state_key_pairs(mdp: ClinicalMDP, constraint_set: set) -> set[tuple[str, int]]:
-    """Map learned constraints from transient state ids to persistent state-key/action pairs."""
+    """Params: mdp, constraint_set (state ids or (state, action) tuples). Returns: set of (state-key string, action) pairs."""
     pairs: set[tuple[str, int]] = set()
     num_core_states = len(mdp.states)
 
@@ -846,357 +886,125 @@ def constraints_to_state_key_pairs(mdp: ClinicalMDP, constraint_set: set) -> set
     return pairs
 
 
-def _plot_preference_weights(results: dict, output_path: Path) -> None:
-    weights = np.array(results["weights"], dtype=float)
-    clusters = np.arange(weights.shape[0])
-    width = 0.35
+def generate_paper_figures(results_dir: Path | None = None) -> list[str]:
+    """Params: results_dir (defaults to RESULTS_DIR). Returns: list of figure file paths written by make_paper_figures.main."""
+    import make_paper_figures
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(clusters - width / 2, weights[:, 0], width=width, label="QoL Weight", color="#1f77b4")
-    ax.bar(clusters + width / 2, weights[:, 1], width=width, label="Survival Weight", color="#ff7f0e")
-
-    ax.set_title("Learned Preference Weights by Cluster")
-    ax.set_xlabel("Cluster")
-    ax.set_ylabel("Weight Value")
-    ax.set_xticks(clusters)
-    ax.set_xticklabels([f"Cluster {i}" for i in clusters])
-    ax.legend()
-    ax.grid(axis="y", alpha=0.25)
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
+    return make_paper_figures.main(RESULTS_DIR if results_dir is None else results_dir)
 
 
-def _plot_cluster_priors(results: dict, output_path: Path) -> None:
-    priors = np.array(results["final_priors"], dtype=float)
-    clusters = np.arange(len(priors))
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(clusters, priors, color=["#2ca02c", "#d62728", "#9467bd", "#8c564b"][: len(priors)])
-
-    ax.set_title("Inferred Cluster Prior Probabilities")
-    ax.set_xlabel("Cluster")
-    ax.set_ylabel("Prior Probability")
-    ax.set_xticks(clusters)
-    ax.set_xticklabels([f"Cluster {i}" for i in clusters])
-    ax.set_ylim(0.0, 1.0)
-    ax.grid(axis="y", alpha=0.25)
-
-    for i, p in enumerate(priors):
-        ax.text(i, p + 0.02, f"{p:.2f}", ha="center", va="bottom", fontsize=10)
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
+def _search_options() -> SearchOptions:
+    """Params: none. Returns: SearchOptions built from the module-level search configuration constants."""
+    return SearchOptions(
+        mode=SEARCH_MODE,
+        likelihood=LIKELIHOOD,
+        weight_bound=WEIGHT_BOUND,
+        refit_iters=int(REFIT_ITERS),
+        candidate_epsilon=CANDIDATE_EPSILON,
+        candidate_max_count=int(CANDIDATE_MAX_COUNT),
+        violation_noise=VIOLATION_NOISE,
+        rank_by_discrepancy=bool(RANK_BY_DISCREPANCY),
+        generalize=GENERALIZE_CONSTRAINTS,
+    )
 
 
-def _plot_action_feasibility(results: dict, output_path: Path) -> None:
-    infeasible = pd.DataFrame(results.get("state_action_constraints", []))
-    if infeasible.empty:
-        action_labels = ACTION_NAMES[:4]
-        feasibility = pd.Series({a: 1.0 for a in action_labels})
-    else:
-        action_labels = ACTION_NAMES[:4]
-        counts = (
-            infeasible[infeasible["eligibility_infeasible"]]
-            .groupby("action")
-            .size()
-            .reindex(action_labels, fill_value=0)
+def _state_key_to_id(mdp: ClinicalMDP) -> dict[str, int]:
+    """Params: mdp. Returns: dict mapping state-key string to state id."""
+    return {"|".join(str(v) for v in key): i + 1 for i, key in enumerate(mdp.states)}
+
+
+def compute_low_tpr_diagnostics(records: list[dict], base_eval_rows: list[dict]) -> dict:
+    """Params: records (per-restart mdp/trajectory/diagnostics records), base_eval_rows. Returns: dict with "per_restart" and "lambda_sweep" diagnostic lists."""
+    gt_rows = [r for r in base_eval_rows if r["eligibility_infeasible"]]
+    restart_summaries: list[dict] = []
+    sweep_rows: list[dict] = []
+
+    for rec in records:
+        mdp, diag, pairs = rec["mdp"], rec["diag"], rec["pairs"]
+        ids = _state_key_to_id(mdp)
+        core_states = set(range(1, len(mdp.states) + 1))
+        reach = moci.reachable_states(mdp) & core_states
+
+        base_w, base_p = diag.get("baseline_weights"), diag.get("baseline_priors")
+        pi_unc = moci.model_policy(mdp, base_w, base_p, set()) if base_w is not None else None
+        sa_counts, _ = moci.empirical_action_stats(mdp, rec["trajectories"])
+
+        per_pair = []
+        for r in gt_rows:
+            sid = ids.get(str(r["state_key"]))
+            if sid is None:
+                continue
+            a = int(r["action_idx"])
+            per_pair.append(
+                {
+                    "reachable": sid in reach,
+                    "detected": (str(r["state_key"]), a) in pairs,
+                    "pi_unconstrained": float(pi_unc[sid, a]) if pi_unc is not None else float("nan"),
+                    "demonstrated": sa_counts.get((sid, a), 0) > 0,
+                }
+            )
+        gdf = pd.DataFrame(per_pair)
+
+        def mean_of(mask, col):
+            """Params: mask (boolean row selector), col (column name). Returns: mean of gdf[col] over masked rows, or nan if empty."""
+            sub = gdf[mask]
+            return float(sub[col].mean()) if len(sub) else float("nan")
+
+        missed = ~gdf["detected"]
+        restart_summaries.append(
+            {
+                "restart": rec["restart"],
+                "n_states": len(core_states),
+                "n_states_reachable_from_start": len(reach),
+                "n_gt_pairs": int(len(gdf)),
+                "frac_gt_pairs_in_reachable_states": float(gdf["reachable"].mean()),
+                "tpr": float(gdf["detected"].mean()),
+                "tpr_reachable_states": mean_of(gdf["reachable"], "detected"),
+                "tpr_unreachable_states": mean_of(~gdf["reachable"], "detected"),
+                "frac_gt_pairs_demonstrated_by_expert": float(gdf["demonstrated"].mean()),
+                "mean_pi_unconstrained_detected": mean_of(gdf["detected"], "pi_unconstrained"),
+                "mean_pi_unconstrained_missed": mean_of(missed, "pi_unconstrained"),
+                "frac_missed_absorbed_pi_lt_0.05": float((gdf[missed]["pi_unconstrained"] < 0.05).mean()) if missed.any() else float("nan"),
+                "frac_missed_in_unreachable_states": float((~gdf[missed]["reachable"]).mean()) if missed.any() else float("nan"),
+            }
         )
-        total_states = max(1, int(infeasible["state_id"].nunique()))
-        infeasible_rate = counts / total_states
-        feasibility = 1.0 - np.clip(infeasible_rate, 0.0, 1.0)
 
-    values = feasibility.values.reshape(1, -1)
-
-    fig, ax = plt.subplots(figsize=(9, 2.8))
-    img = ax.imshow(values, aspect="auto", cmap="YlGn", vmin=0.0, vmax=1.0)
-
-    ax.set_title("Action Feasibility Rate Across Inferred States")
-    ax.set_xlabel("Treatment Action")
-    ax.set_yticks([0])
-    ax.set_yticklabels(["Feasibility"])
-    ax.set_xticks(np.arange(len(action_labels)))
-    ax.set_xticklabels(action_labels)
-
-    for j, val in enumerate(feasibility.values):
-        ax.text(j, 0, f"{100.0 * val:.1f}%", ha="center", va="center", color="black", fontsize=10)
-
-    cbar = fig.colorbar(img, ax=ax)
-    cbar.set_label("Feasibility Proportion")
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
-
-
-def _plot_longitudinal_outcomes(df: pd.DataFrame, cluster_map: dict, output_path: Path, cluster_probabilities: list[dict] | None = None, num_clusters: int = 2) -> None:
-    plot_df = df.copy()
-    plot_df["alive_flag"] = (plot_df["survival_status"] == "Alive").astype(float)
-
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
-
-    if cluster_probabilities:
-        prob_df = pd.DataFrame(cluster_probabilities)
-        if "sympro_respondent" in prob_df.columns:
-            plot_df = plot_df.merge(prob_df, on="sympro_respondent", how="left")
-
-    used_soft = False
-    for cluster_id in range(num_clusters):
-        prob_col = f"cluster_{cluster_id}_prob"
-        if prob_col in plot_df.columns and plot_df[prob_col].notna().any():
-            used_soft = True
-            month_rows = []
-            for month, g in plot_df.groupby("timepoint_month", sort=True):
-                weights = np.clip(g[prob_col].to_numpy(dtype=float), 0.0, None)
-                w_sum = float(weights.sum())
-                if w_sum <= 0.0:
-                    month_rows.append({"timepoint_month": int(month), "qol_mean": np.nan, "alive_rate": np.nan})
+        trace = diag.get("trace") if SEARCH_MODE == "frozen" else None
+        if trace is not None:
+            covered_from = min(float(rec["lambda_search"]), float(diag.get("shadow_floor", np.inf)))
+            if diag.get("shadow_capped") and trace:
+                covered_from = max(covered_from, float(trace[-1]["delta_logL"]))
+            for lam in LAMBDA_SWEEP_GRID:
+                if lam < covered_from - 1e-12:
                     continue
-
-                month_rows.append(
+                chosen: set = set()
+                for entry in trace:
+                    if entry["delta_logL"] > lam:
+                        chosen.update(tuple(p) for p in entry["pairs"])
+                    else:
+                        break
+                chosen_pairs = constraints_to_state_key_pairs(mdp, chosen)
+                prob = {
+                    (str(r["state_key"]), int(r["action_idx"])): 1.0 if (str(r["state_key"]), int(r["action_idx"])) in chosen_pairs else 0.0
+                    for r in base_eval_rows
+                }
+                m = compute_tp_fp_metrics(build_eval_rows_from_probabilities(base_eval_rows, prob, 0.5), set())
+                sweep_rows.append(
                     {
-                        "timepoint_month": int(month),
-                        "qol_mean": float(np.average(g["QoL"].to_numpy(dtype=float), weights=weights)),
-                        "alive_rate": float(np.average(g["alive_flag"].to_numpy(dtype=float), weights=weights)),
+                        "restart": rec["restart"],
+                        "lambda": float(lam),
+                        "n_constraints": int(len(chosen)),
+                        "tpr": m["tpr"],
+                        "fpr": m["fpr"],
+                        "precision": m["precision"],
                     }
                 )
-            qdf = pd.DataFrame(month_rows)
 
-            axes[0].plot(
-                qdf["timepoint_month"],
-                qdf["qol_mean"],
-                marker="o",
-                linewidth=2,
-                color=colors[cluster_id % len(colors)],
-                label=f"Cluster {cluster_id}",
-            )
-            axes[1].plot(
-                qdf["timepoint_month"],
-                100.0 * qdf["alive_rate"],
-                marker="s",
-                linewidth=2,
-                color=colors[cluster_id % len(colors)],
-                label=f"Cluster {cluster_id}",
-            )
-
-    if not used_soft:
-        plot_df["cluster"] = plot_df["sympro_respondent"].map(cluster_map)
-        plot_df = plot_df.dropna(subset=["cluster"]).copy()
-        plot_df["cluster"] = plot_df["cluster"].astype(int)
-
-        month_qol = (
-            plot_df.groupby(["cluster", "timepoint_month"], as_index=False)
-            .agg(qol_mean=("QoL", "mean"))
-            .sort_values(["cluster", "timepoint_month"])
-        )
-        month_alive = (
-            plot_df.groupby(["cluster", "timepoint_month"], as_index=False)
-            .agg(alive_rate=("alive_flag", "mean"))
-            .sort_values(["cluster", "timepoint_month"])
-        )
-
-        for cluster_id in range(num_clusters):
-            cdf_q = month_qol[month_qol["cluster"] == cluster_id]
-            cdf_a = month_alive[month_alive["cluster"] == cluster_id]
-            if cdf_q.empty or cdf_a.empty:
-                continue
-            axes[0].plot(
-                cdf_q["timepoint_month"],
-                cdf_q["qol_mean"],
-                marker="o",
-                linewidth=2,
-                color=colors[cluster_id % len(colors)],
-                label=f"Cluster {cluster_id}",
-            )
-            axes[1].plot(
-                cdf_a["timepoint_month"],
-                100.0 * cdf_a["alive_rate"],
-                marker="s",
-                linewidth=2,
-                color=colors[cluster_id % len(colors)],
-                label=f"Cluster {cluster_id}",
-            )
-
-    axes[0].set_title("Mean QoL Over Time")
-    axes[0].set_xlabel("Month")
-    axes[0].set_ylabel("Mean QoL")
-    axes[0].grid(alpha=0.25)
-    axes[0].legend()
-
-    axes[1].set_title("Alive Rate Over Time")
-    axes[1].set_xlabel("Month")
-    axes[1].set_ylabel("Alive Rate (%)")
-    axes[1].set_ylim(0, 100)
-    axes[1].grid(alpha=0.25)
-    axes[1].legend()
-
-    fig.suptitle("Longitudinal Outcomes by Inferred Preference Cluster")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
-
-
-def _plot_true_false_positive_rates(results: dict, output_path: Path) -> None:
-    metrics = results.get("constraint_detection", {})
-    labels = ["True Positive Rate", "False Positive Rate"]
-    values = [float(metrics.get("tpr", 0.0)), float(metrics.get("fpr", 0.0))]
-    counts = [int(metrics.get("tp", 0)), int(metrics.get("fp", 0))]
-    colors = ["#2ca02c", "#d62728"]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.bar(labels, values, color=colors)
-
-    ax.set_title("Learned Constraint True/False Positive Rates")
-    ax.set_xlabel("Metric")
-    ax.set_ylabel("Rate")
-    ymax = max(values) if values else 0.0
-    top = min(1.0, ymax * 1.25 + 0.02) if ymax > 0 else 0.1
-    ax.set_ylim(0.0, top)
-    ax.grid(axis="y", alpha=0.25)
-
-    for bar, v, c in zip(bars, values, counts):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            min(v + top * 0.03, top * 0.98),
-            f"{100.0 * v:.1f}% (n={c})",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-        )
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
-
-
-def _plot_per_action_rates(results: dict, output_path: Path) -> None:
-    metrics_df = pd.DataFrame(results.get("per_action_detection", []))
-    if metrics_df.empty:
-        return
-
-    x = np.arange(len(metrics_df))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(x - width / 2, metrics_df["tpr"], width=width, label="TPR", color="#2ca02c")
-    ax.bar(x + width / 2, metrics_df["fpr"], width=width, label="FPR", color="#d62728")
-
-    ax.set_title("Per-Treatment Constraint Detection Rates")
-    ax.set_xlabel("Treatment Action")
-    ax.set_ylabel("Rate")
-    ax.set_xticks(x)
-    ax.set_xticklabels(metrics_df["action"].tolist())
-    yvals = np.concatenate([metrics_df["tpr"].to_numpy(dtype=float), metrics_df["fpr"].to_numpy(dtype=float)])
-    ymax = float(np.nanmax(yvals)) if yvals.size > 0 else 0.0
-    top = min(1.0, ymax * 1.25 + 0.02) if ymax > 0 else 0.1
-    ax.set_ylim(0.0, top)
-    ax.legend()
-    ax.grid(axis="y", alpha=0.25)
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
-
-
-def _plot_threshold_sweep(results: dict, output_path: Path) -> None:
-    sweep_df = pd.DataFrame(results.get("threshold_sweep", []))
-    if sweep_df.empty:
-        return
-
-    fig, ax = plt.subplots(figsize=(7, 6))
-    ax.plot(sweep_df["fpr"], sweep_df["tpr"], marker="o", color="#1f77b4", linewidth=2, label="Threshold Sweep")
-    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Random Baseline")
-
-    ax.set_title("Constraint Detection Threshold Sweep")
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.legend()
-    ax.grid(alpha=0.25)
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
-
-
-def _plot_restart_recall_precision(results: dict, output_path: Path) -> None:
-    restart_df = pd.DataFrame(results.get("restart_metrics", []))
-    if restart_df.empty:
-        return
-
-    restart_df = restart_df.sort_values("restart").copy()
-    x = restart_df["restart"].to_numpy(dtype=int) + 1
-    recall = restart_df["tpr"].to_numpy(dtype=float)
-    precision = restart_df["precision"].to_numpy(dtype=float)
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(x, recall, marker="o", linewidth=2, color="#1f77b4", label="Recall (TPR)")
-    ax.plot(x, precision, marker="s", linewidth=2, color="#ff7f0e", label="Precision")
-
-    ax.set_title("Recall and Precision Across Restarts")
-    ax.set_xlabel("Restart Index")
-    ax.set_ylabel("Metric Value")
-    ax.set_ylim(0.0, 1.0)
-    ax.set_xticks(x)
-    ax.grid(alpha=0.25)
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
-    plt.close(fig)
-
-
-def generate_paper_figures(results: dict, df: pd.DataFrame, cluster_map: dict[int, int]) -> list[str]:
-    RESULTS_DIR.mkdir(exist_ok=True)
-    figure_paths = []
-
-    pref_path = RESULTS_DIR / PLOT_FILENAMES["preferences"]
-    _plot_preference_weights(results, pref_path)
-    figure_paths.append(str(pref_path))
-
-    prior_path = RESULTS_DIR / PLOT_FILENAMES["priors"]
-    _plot_cluster_priors(results, prior_path)
-    figure_paths.append(str(prior_path))
-
-    feasibility_path = RESULTS_DIR / PLOT_FILENAMES["feasibility"]
-    _plot_action_feasibility(results, feasibility_path)
-    figure_paths.append(str(feasibility_path))
-
-    longitudinal_path = RESULTS_DIR / PLOT_FILENAMES["longitudinal"]
-    _plot_longitudinal_outcomes(
-        df,
-        cluster_map,
-        longitudinal_path,
-        cluster_probabilities=results.get("cluster_probabilities"),
-        num_clusters=len(results.get("weights", [])) if results.get("weights") else 2,
-    )
-    figure_paths.append(str(longitudinal_path))
-
-    tp_fp_path = RESULTS_DIR / PLOT_FILENAMES["tp_fp"]
-    _plot_true_false_positive_rates(results, tp_fp_path)
-    figure_paths.append(str(tp_fp_path))
-
-    per_action_path = RESULTS_DIR / PLOT_FILENAMES["tp_fp_by_action"]
-    _plot_per_action_rates(results, per_action_path)
-    figure_paths.append(str(per_action_path))
-
-    sweep_path = RESULTS_DIR / PLOT_FILENAMES["threshold_sweep"]
-    _plot_threshold_sweep(results, sweep_path)
-    figure_paths.append(str(sweep_path))
-
-    rp_path = RESULTS_DIR / PLOT_FILENAMES["restart_recall_precision"]
-    _plot_restart_recall_precision(results, rp_path)
-    figure_paths.append(str(rp_path))
-
-    return figure_paths
+    return {"per_restart": restart_summaries, "lambda_sweep": sweep_rows}
 
 
 def run_lung_cancer_moci() -> dict:
-    """Apply MOCI to the lung-cancer dataset and store the learned preference weights."""
+    """Params: none. Returns: dict of learned weights, priors, inferred constraints, detection metrics, and training config."""
     df = load_and_prepare_dataset()
     df = df[df.get("QoL").notna()].copy()
 
@@ -1210,35 +1018,55 @@ def run_lung_cancer_moci() -> dict:
     trajectories_ref, state_to_idx_ref, _, _, _, _ = build_patient_trajectories(df_train, max_patients=None)
     mdp_ref, _ = build_clinical_mdp(df_train, max_patients=None)
 
-    best = None
-    restart_rows = []
     base_eval_rows = build_reference_eval_rows(df_train, state_to_idx_ref)
-    inferred_votes = {(str(r["state_key"]), int(r["action_idx"])): 0 for r in base_eval_rows}
     ref_patient_ids = np.array(sorted(df_train["sympro_respondent"].unique()), dtype=int)
+    search_options = _search_options()
 
-    for restart_idx in range(NUM_RESTARTS):
-        seed = SEED_BASE + restart_idx
-        rng = np.random.default_rng(seed)
-
+    def make_problem(restart_idx: int, rng: np.random.Generator):
+        """Params: restart_idx, rng. Returns: (ClinicalMDP, trajectories) built from a bootstrap resample of the training patients."""
         if BOOTSTRAP_RESTARTS:
             sampled_ids = rng.choice(ref_patient_ids, size=len(ref_patient_ids), replace=True)
             df_restart = bootstrap_patient_dataframe(df_train, sampled_ids)
         else:
             df_restart = df_train.copy()
+        return build_clinical_mdp(df_restart, max_patients=None)
 
-        mdp, trajectories = build_clinical_mdp(df_restart, max_patients=None)
-        np.random.seed(seed)
-        inferred_constraints, final_weights, final_priors = moci.run_em_moci(
-            mdp,
-            trajectories,
-            K=2,
-            d_DKL=DKL_THRESHOLD,
-            max_em_iters=EM_MAX_ITERS,
-            candidate_subset_size=CANDIDATE_SUBSET_SIZE,
+    def make_diagnostics(restart_idx: int, mdp: ClinicalMDP) -> dict:
+        """Params: restart_idx, mdp. Returns: dict of diagnostics settings, or empty dict if diagnostics are disabled."""
+        if RUN_DIAGNOSTICS and SEARCH_MODE == "frozen":
+            return {"shadow_floor": float(min(LAMBDA_SWEEP_GRID)), "max_shadow_rounds": int(SHADOW_MAX_ROUNDS)}
+        return {}
+
+    ensemble = moci.run_moci_ensemble(
+        make_problem,
+        K=2,
+        n_restarts=NUM_RESTARTS,
+        seed_base=SEED_BASE,
+        d_DKL=DKL_THRESHOLD,
+        max_em_iters=EM_MAX_ITERS,
+        candidate_subset_size=CANDIDATE_SUBSET_SIZE,
+        lambda_penalty=LAMBDA_PENALTY,
+        options=search_options,
+        safety_filter_fn=(lambda m: m.safety_screen) if USE_SAFETY_PREFILTER else None,
+        canonicalize=constraints_to_state_key_pairs,
+        diagnostics_factory=make_diagnostics,
+    )
+
+    restart_rows = []
+    diagnostic_records: list[dict] = []
+    for rec in ensemble.restarts:
+        mdp, trajectories = rec["mdp"], rec["demos"]
+        inferred_pairs = rec["canonical"]
+        diagnostic_records.append(
+            {
+                "restart": int(rec["restart"]),
+                "mdp": mdp,
+                "trajectories": trajectories,
+                "diag": rec["diagnostics"],
+                "pairs": inferred_pairs,
+                "lambda_search": moci.resolve_lambda(LAMBDA_PENALTY, len(trajectories), DKL_THRESHOLD),
+            }
         )
-
-        log_like = float(moci.calculate_joint_log_likelihood(mdp, trajectories, inferred_constraints, final_weights, final_priors))
-        inferred_pairs = constraints_to_state_key_pairs(mdp, inferred_constraints)
         restart_prob = {
             (str(r["state_key"]), int(r["action_idx"])): 1.0 if (str(r["state_key"]), int(r["action_idx"])) in inferred_pairs else 0.0
             for r in base_eval_rows
@@ -1247,30 +1075,28 @@ def run_lung_cancer_moci() -> dict:
         metrics = compute_tp_fp_metrics(eval_rows, set())
         restart_rows.append(
             {
-                "restart": int(restart_idx),
-                "seed": int(seed),
+                "restart": int(rec["restart"]),
+                "seed": int(rec["seed"]),
                 "bootstrap": bool(BOOTSTRAP_RESTARTS),
-                "joint_log_likelihood_avg": log_like,
-                "n_constraints": int(len(inferred_constraints)),
+                "joint_log_likelihood_avg": rec["log_like"],
+                "n_constraints": int(len(rec["constraints"])),
                 "tpr": float(metrics["tpr"]),
                 "fpr": float(metrics["fpr"]),
                 "precision": float(metrics["precision"]),
             }
         )
 
-        for row in base_eval_rows:
-            pair = (str(row["state_key"]), int(row["action_idx"]))
-            if pair in inferred_pairs:
-                inferred_votes[pair] += 1
-
-        if (best is None) or (log_like > best["log_like"]):
-            best = {
-                "constraints": inferred_constraints,
-                "weights": final_weights,
-                "priors": final_priors,
-                "log_like": log_like,
-                "mdp": mdp,
-            }
+    inferred_votes = {
+        (str(r["state_key"]), int(r["action_idx"])): ensemble.votes.get((str(r["state_key"]), int(r["action_idx"])), 0)
+        for r in base_eval_rows
+    }
+    best = {
+        "constraints": ensemble.best["constraints"],
+        "weights": ensemble.best["weights"],
+        "priors": ensemble.best["priors"],
+        "log_like": ensemble.best["log_like"],
+        "mdp": ensemble.best["mdp"],
+    }
 
     inferred_probability = {k: v / float(NUM_RESTARTS) for k, v in inferred_votes.items()}
     action_thresholds = None
@@ -1363,6 +1189,17 @@ def run_lung_cancer_moci() -> dict:
             "bootstrap_restarts": bool(BOOTSTRAP_RESTARTS),
             "em_max_iters": int(EM_MAX_ITERS),
             "d_dkl": float(DKL_THRESHOLD),
+            "lambda_penalty": LAMBDA_PENALTY,
+            "search_mode": SEARCH_MODE,
+            "likelihood": LIKELIHOOD,
+            "weight_bound": WEIGHT_BOUND,
+            "candidate_epsilon": CANDIDATE_EPSILON,
+            "candidate_max_count": int(CANDIDATE_MAX_COUNT),
+            "violation_noise": VIOLATION_NOISE,
+            "rank_by_discrepancy": bool(RANK_BY_DISCREPANCY),
+            "generalize_constraints": GENERALIZE_CONSTRAINTS,
+            "use_safety_prefilter": bool(USE_SAFETY_PREFILTER),
+            "safety_thresholds": dict(SAFETY_THRESHOLDS),
             "train_max_patients": int(TRAIN_MAX_PATIENTS),
             "seed_base": int(SEED_BASE),
             "candidate_subset_size": None if CANDIDATE_SUBSET_SIZE is None else int(CANDIDATE_SUBSET_SIZE),
@@ -1370,13 +1207,15 @@ def run_lung_cancer_moci() -> dict:
         },
     }
 
-    figure_paths = generate_paper_figures(results, df_train, cluster_map)
-    results["generated_figures"] = figure_paths
+    if RUN_DIAGNOSTICS:
+        results["low_tpr_diagnostics"] = compute_low_tpr_diagnostics(diagnostic_records, base_eval_rows)
+
 
     return results
 
 
 def save_results(results: dict) -> None:
+    """Params: results (dict produced by run_lung_cancer_moci). Returns: None; writes CSV/JSON outputs to RESULTS_DIR."""
     RESULTS_DIR.mkdir(exist_ok=True)
 
     weights_path = RESULTS_DIR / "learned_preferences.csv"
@@ -1407,6 +1246,12 @@ def save_results(results: dict) -> None:
     restart_path = RESULTS_DIR / "constraint_restart_metrics.csv"
     pd.DataFrame(results.get("restart_metrics", [])).to_csv(restart_path, index=False)
 
+    diagnostics = results.get("low_tpr_diagnostics")
+    if diagnostics:
+        pd.DataFrame(diagnostics.get("per_restart", [])).to_csv(RESULTS_DIR / "diagnostics_low_tpr.csv", index=False)
+        if diagnostics.get("lambda_sweep"):
+            pd.DataFrame(diagnostics["lambda_sweep"]).to_csv(RESULTS_DIR / "lambda_sweep.csv", index=False)
+
     summary_path = RESULTS_DIR / "summary.json"
     with open(summary_path, "w", encoding="utf-8") as fp:
         json.dump(results, fp, indent=2)
@@ -1420,13 +1265,12 @@ def save_results(results: dict) -> None:
     print(f"Saved threshold sweep to: {threshold_path}")
     print(f"Saved restart metrics to: {restart_path}")
     print(f"Saved summary to: {summary_path}")
-    for fig_path in results.get("generated_figures", []):
-        print(f"Saved figure: {fig_path}")
 
 
 if __name__ == "__main__":
     results = run_lung_cancer_moci()
     save_results(results)
+    generate_paper_figures()
     print("MOCI lung-cancer learning completed.")
     print(json.dumps({
         "constraint_type": results["constraint_type"],

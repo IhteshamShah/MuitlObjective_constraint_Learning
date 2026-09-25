@@ -1,0 +1,28 @@
+method,metric,mean,std
+MOCI,runtime_sec,3.5235709031422933,0.1741485493949431
+MOCI,mse,0.015625,0.0
+MOCI,precision,1.0,0.0
+MOCI,recall,0.8000000000000003,2.220446049250313e-16
+MOCI,f1,0.8888888888888891,1.1102230246251565e-16
+MOCI,mcc,0.886942313043338,1.1102230246251565e-16
+MLCI,runtime_sec,0.3450753847757975,0.13760010672163375
+MLCI,mse,0.06770833333333333,0.024650332429581735
+MLCI,precision,0.5527056277056276,0.09489533953869614
+MLCI,recall,0.9466666666666668,0.08844332774281062
+MLCI,f1,0.6927350427350428,0.08491970226720476
+MLCI,mcc,0.6915413990678556,0.08689288348048826
+ICRL,runtime_sec,17.095484081904093,0.4308518617131347
+ICRL,mse,0.35625,0.06851284855168896
+ICRL,precision,0.17897849907157756,0.0315005927649199
+ICRL,recall,0.9600000000000001,0.10832051206181281
+ICRL,f1,0.30064074685436915,0.04738391128374745
+ICRL,mcc,0.31657023464530115,0.06980677230311129
+MOCI (reward/cluster recovery),weight_cosine_sim_expert1_grass,0.8246702411128811,0.0562586898139231
+MOCI (reward/cluster recovery),weight_cosine_sim_expert2_rock,0.7764175487305136,0.08380715338992036
+MOCI (reward/cluster recovery),cluster_ari,0.5066492706229595,0.07328468508462778
+MLCI (reward/cluster recovery),weight_cosine_sim_expert1_grass,N/A -- no cluster model,N/A
+MLCI (reward/cluster recovery),weight_cosine_sim_expert2_rock,N/A -- no cluster model,N/A
+MLCI (reward/cluster recovery),cluster_ari,N/A -- no cluster model,N/A
+ICRL (reward/cluster recovery),weight_cosine_sim_expert1_grass,N/A -- no cluster model,N/A
+ICRL (reward/cluster recovery),weight_cosine_sim_expert2_rock,N/A -- no cluster model,N/A
+ICRL (reward/cluster recovery),cluster_ari,N/A -- no cluster model,N/A

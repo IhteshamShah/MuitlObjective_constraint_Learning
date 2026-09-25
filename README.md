@@ -1,127 +1,79 @@
-# MuitlObjective_constraint_Learning
-"""
-Overview of the main components of the MLCI framework:
+# MOCI: Multi-Objective Constraint Inference
 
-1. calculate_trajectory_prob(mdp, xi, C, w_k)
-   Inputs:
-     - mdp: The MDP environment
-     - xi: A single demonstrated trajectory
-     - C: Current set of inferred constraints
-     - w_k: Reward weights for expert cluster k
+MOCI is an EM-based inverse reinforcement learning algorithm. It takes a pool of
+demonstrations from several experts whose preferences differ and are unknown, and
+recovers two things together: (a) the reward weights of each expert cluster and
+(b) one shared set of hidden hard constraints that every expert avoids. This
+repository contains the core algorithm (`MOCI_IRL.py`) and applies it to two use
+cases: a synthetic GridWorld and a lung-cancer treatment-planning MDP. It also
+includes additional sensitivity, scalability and ablation experiments.
 
-   Output:
-     - P(xi | C, w_k): Probability that cluster k generated trajectory xi
+## Repository structure
 
-   Description:
-     Implements the Maximum Entropy (MaxEnt) trajectory distribution.
-     If the trajectory violates any constraint in C, the probability is 0
-     (via the indicator function I^C(xi)). Otherwise, it computes the
-     partition function Z(C, w_k) using a backward pass, evaluates the
-     trajectory reward R_{w_k}(xi), and returns exp(R) / Z.
+```
+MOCI_IRL.py                              Core MOCI algorithm 
+requirements.txt                         Python dependencies
+LICENSE                                  MIT license
 
+use_case/
+  GridWorld/
+    gridworld_Env.py                     Multi-feature GridWorld MDP (sand/grass/rock/water)
+                                         + plotting utilities
+    Moci_GW.py                           MOCI applied to the GridWorld use case
+  Lung_cancer/
+    Moci_lung_cancer.py                  MOCI applied to the lung-cancer dataset
+                                         (K=2 clusters, bootstrap-restart ensemble)
 
-2. calculate_joint_log_likelihood(mdp, D, C, weights, priors)
-   Inputs:
-     - mdp: The MDP environment
-     - D: Set of all demonstrated trajectories
-     - C: Current constraints
-     - weights: Reward weights for all clusters
-     - priors: Prior probability for each cluster
+Additional_Experiments/
+  Sensitivity_Scalability_analysis.py    FPR vs. dataset size, FPR vs. grid size,
+                                         runtime vs. grid size across horizons
+  Ablation_GW.py                         Oracle-reward, EM-iterations and K=1/2/3
+                                         ablations on GridWorld
 
-   Output:
-     - L: Total joint log-likelihood of the dataset
+Results/                                 Saved outputs from previous runs (see "Outputs")
+```
 
-   Description:
-     Computes the marginal log-likelihood of the demonstrations by
-     summing over latent expert clusters. For each trajectory, the
-     probability under each cluster is weighted by its prior and summed
-     before taking the logarithm.
+## Requirements
 
+- Python 3.10+
+- Dependencies in `requirements.txt`: `numpy`, `scipy`, `pandas`, `matplotlib`,
+  `scikit-learn` (used by `Ablation_GW.py` for the adjusted Rand index) and `torch`.
 
-3. identify_candidates(mdp, D)
-   Inputs:
-     - mdp: The MDP environment
-     - D: Set of demonstrations
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # optional
+pip install -r requirements.txt
+```
 
-   Output:
-     - candidates: List of states that are candidate constraints
+## Running the experiments
 
-   Description:
-     A state is considered a candidate constraint if it is never visited
-     by any expert. States visited by experts cannot be hard constraints.
+Run every script from the repository root. Each script adds the root to `sys.path`
+so it can import `MOCI_IRL`.
 
+```bash
+# GridWorld: an 8x8 grid with hidden WATER constraints and two experts
+# (grass-preferring and rock-preferring), 20 demonstrations each. MOCI infers the
+# shared constraint set and each expert's reward weights.
+python3 use_case/GridWorld/Moci_GW.py
 
-4. e_step(mdp, D, C_hat, weights, priors)
-   Inputs:
-     - mdp: The MDP environment
-     - D: Demonstrations
-     - C_hat: Current inferred constraints
-     - weights: Cluster reward weights
-     - priors: Cluster priors
-
-   Output:
-     - gamma: Responsibility matrix of shape (num_demos, K)
-
-   Description:
-     Expectation step of EM. Computes the posterior probability that each
-     cluster k generated demonstration i (gamma_{i,k}).
+# Lung cancer: builds a clinical MDP from patient trajectories, runs MOCI with
+# bootstrap-restart ensembling to learn state-action treatment constraints, compares
+# them with clinical eligibility, then renders the paper figures.
+python3 use_case/Lung_cancer/Moci_lung_cancer.py
 
 
-5. m_step_weights(mdp, D, C_hat, weights, responsibilities, lr, steps)
-   Inputs:
-     - mdp: The MDP environment
-     - D: Demonstrations
-     - C_hat: Current constraints
-     - weights: Current reward weights
-     - responsibilities: Posterior responsibilities gamma
-     - lr: Learning rate
-     - steps: Number of gradient steps
+# Sensitivity / scalability sweeps
+python3 Additional_Experiments/Sensitivity_Scalability_analysis.py
 
-   Output:
-     - Updated reward weights for each cluster
-
-   Description:
-     Performs MaxEnt Inverse Reinforcement Learning (IRL). Updates reward
-     weights by matching empirical and expected feature counts. Each
-     cluster’s gradient is weighted by its responsibility, ensuring that
-     clusters adapt primarily to trajectories they explain.
+# GridWorld ablations (oracle reward, EM-iteration budget, K-cluster capacity)
+python3 Additional_Experiments/Ablation_GW.py
+```
 
 
-6. m_step_constraints(mdp, D, C_hat, weights, priors, d_DKL)
-   Inputs:
-     - mdp: The MDP environment
-     - D: Demonstrations
-     - C_hat: Current inferred constraints
-     - weights: Updated reward weights
-     - priors: Updated cluster priors
-     - d_DKL: KL-divergence stopping threshold
+## Outputs
 
-   Output:
-     - Updated constraint set C_hat
-
-   Description:
-     Core step of the MLCI algorithm. Iteratively tests adding candidate
-     constraints and selects the one that maximally increases the joint
-     log-likelihood. Stops when the improvement (equivalent to a decrease
-     in KL-divergence) falls below d_DKL.
+Every script writes into `Results/`. 
 
 
-7. run_em_mlci(mdp, D, K, d_DKL, max_em_iters)
-   Inputs:
-     - mdp: The MDP environment
-     - D: Demonstrations
-     - K: Number of expert clusters
-     - d_DKL: KL-divergence stopping threshold
-     - max_em_iters: Maximum EM iterations
+## License
 
-   Output:
-     - C_hat: Final inferred shared constraints
-     - weights: Learned reward weights
-     - priors: Learned cluster priors
-
-   Description:
-     Main orchestration function. Initializes parameters and alternates
-     between the E-step and M-steps (updating priors, reward weights, and
-     constraints) until convergence or the maximum number of iterations
-     is reached.
-"""
+MIT, see `LICENSE`.
